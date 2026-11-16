@@ -55,7 +55,7 @@ async function tokenRequest(params) {
   const body = new URLSearchParams({ client_id: clientId(), scope: SCOPES, ...params });
   const r = await fetch(AUTH + '/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error_description || j.error || ('Erro ' + r.status + ' ao obter o token'));
+  if (!r.ok) { const e = new Error(j.error_description || j.error || ('Erro ' + r.status + ' ao obter o token')); e.oauth = true; throw e; }
   const old = LS.get('tok') || {};
   LS.set('tok', { at: j.access_token, rt: j.refresh_token || old.rt, exp: Date.now() + (j.expires_in - 120) * 1000 });
 }
@@ -69,7 +69,10 @@ async function token() {
       if (!refreshing) refreshing = tokenRequest({ grant_type: 'refresh_token', refresh_token: t.rt }).finally(() => { refreshing = null; });
       await refreshing;
       return LS.get('tok').at;
-    } catch (e) { console.warn('Falha ao renovar token', e); }
+    } catch (e) {
+      console.warn('Falha ao renovar token', e);
+      if (!e.oauth) { const x = new Error('Sem conexão com a internet.'); x.offline = true; throw x; }
+    }
   }
   LS.del('tok');
   return login();
@@ -82,7 +85,11 @@ async function g(path, opt = {}) {
   for (let i = 0; i < 5; i++) {
     let r;
     try { r = await fetch(url, { headers: { Authorization: 'Bearer ' + await token() } }); }
-    catch (e) { if (e instanceof Redirecting) throw e; if (i < 2) { await sleep(1000); continue; } throw new Error('Sem conexão com o OneDrive.'); }
+    catch (e) {
+      if (e instanceof Redirecting || e.offline) throw e;
+      if (i < 2 && navigator.onLine) { await sleep(1000); continue; }
+      const x = new Error('Sem conexão com o OneDrive.'); x.offline = true; throw x;
+    }
     if (r.status === 401 && i === 0) { const t = LS.get('tok'); if (t) { t.exp = 0; LS.set('tok', t); } continue; }
     if (r.status === 429 || r.status === 503 || r.status === 504) { await sleep((+r.headers.get('Retry-After') || 2 + i * 2) * 1000); continue; }
     if (!r.ok) {
@@ -110,11 +117,12 @@ const idb = {
   _db: null,
   open() {
     return this._db || (this._db = new Promise((res, rej) => {
-      const r = indexedDB.open('leitor-vault', 2);
+      const r = indexedDB.open('leitor-vault', 3);
       r.onupgradeneeded = () => {
         const db = r.result;
         if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
         if (!db.objectStoreNames.contains('img')) db.createObjectStore('img');
+        if (!db.objectStoreNames.contains('att')) db.createObjectStore('att');
       };
       r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     }));
@@ -158,6 +166,7 @@ const IC = {
 
 async function loadImage(img) {
   const id = img.dataset.img;
+  if (OFF.have[id] != null) { const b = await idb.get(id, 'att').catch(() => null); if (b) { img.src = URL.createObjectURL(b); return; } }
   const cached = await IC.get(id);
   if (cached) { img.src = URL.createObjectURL(cached); return; }
   const L = await itemLinks(id);
@@ -228,8 +237,10 @@ async function ixDelta(progress) {
       n++;
       if (it.id === IX.vaultId) continue;
       if (incremental && IC.meta && IC.meta[it.id]) IC.drop(it.id);
+      if (incremental && OFF.have[it.id] != null) OFF.stale.add(it.id);
       if (it.deleted) { if (IX.items.delete(it.id)) changed = true; continue; }
       IX.items.set(it.id, { n: it.name, p: it.parentReference && it.parentReference.id, f: !!it.folder }); changed = true;
+      if (incremental && !it.folder && isMd(it.name)) BL.pending.add(it.id);
     }
     progress && progress(n);
     if (j['@odata.nextLink']) url = j['@odata.nextLink'];
@@ -278,10 +289,15 @@ function ixSync(full) {
       if (changed || !IX.ready) { ixRebuild(); }
       await ixSave();
       const first = !IX.ready; IX.ready = true;
+      if (BL.vault !== IX.vaultId) await blLoad();
       status('');
+      if (changed || !IX.ready) BL.rev = null;
       if (first || changed) route();
+      blSchedule();
+      if (OFF.vault !== IX.vaultId) await offLoad();
+      offSave(); offRun();
     } finally { syncing = null; }
-  })().catch(e => { if (!(e instanceof Redirecting)) status('Falha ao indexar: ' + e.message); throw e; });
+  })().catch(e => { if (!(e instanceof Redirecting)) status(navigator.onLine ? 'Falha ao atualizar o índice: ' + e.message : 'Sem internet: usando o que está guardado no aparelho.'); throw e; });
   return syncing;
 }
 
@@ -408,8 +424,8 @@ marked.use({
 });
 
 function splitFM(md) {
-  const m = /^﻿?---\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/.exec(md);
-  return m ? { fm: m[1], body: md.slice(m[0].length) } : { fm: null, body: md.replace(/^﻿/, '') };
+  const m = /^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(\r?\n|$)/.exec(md);
+  return m ? { fm: m[1], body: md.slice(m[0].length) } : { fm: null, body: md.replace(/^\uFEFF/, '') };
 }
 
 const normH = s => fold(String(s).replace(/[#*_`=\[\]]/g, '').trim()).replace(/\s+/g, ' ');
@@ -509,7 +525,11 @@ async function hydrate(root, depth) {
     } catch (e) { img.alt = '⚠ ' + img.alt + ' (' + e.message + ')'; }
   });
   root.querySelectorAll('[data-media]').forEach(async m => {
-    try { m.src = (await itemLinks(m.dataset.media)).dl; } catch { }
+    try {
+      const id = m.dataset.media;
+      const b = OFF.have[id] != null ? await idb.get(id, 'att').catch(() => null) : null;
+      m.src = b ? URL.createObjectURL(b) : (await itemLinks(id)).dl;
+    } catch { }
   });
   for (const tc of root.querySelectorAll('.transclusion[data-note]')) {
     const body = tc.querySelector('.tc-body');
@@ -526,6 +546,14 @@ async function hydrate(root, depth) {
 
 async function openAttachment(id) {
   const name = (IX.items.get(id) || {}).n || '';
+  if (OFF.have[id] != null) {
+    const b = await idb.get(id, 'att').catch(() => null);
+    if (b) {
+      const u = URL.createObjectURL(b), a = document.createElement('a');
+      a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 120000); return;
+    }
+  }
   const w = window.open('', '_blank');
   try {
     const L = await itemLinks(id);
@@ -535,9 +563,14 @@ async function openAttachment(id) {
 }
 
 async function readNote(id) {
+  if (!navigator.onLine) {
+    const c = await idb.get('note:' + id).catch(() => null);
+    if (c != null) { status('Sem internet: exibindo a cópia guardada no aparelho.'); return c; }
+  }
   try {
     const txt = await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true });
     idb.set('note:' + id, txt).catch(() => { });
+    if (OFF.have[id] != null) { OFF.have[id] = txt.length; OFF.stale.delete(id); offSave(); }
     return txt;
   } catch (e) {
     if (e instanceof Redirecting) throw e;
@@ -546,6 +579,276 @@ async function readNote(id) {
     throw e;
   }
 }
+
+/* ---------- Backlinks ---------- */
+// Para cada nota, guarda a lista de destinos dos links que ela contém ("w:" wikilink, "m:" link Markdown).
+const BL = { targets: new Map(), pending: new Set(), rev: null, running: false, vault: null };
+
+function extractLinks(txt) {
+  const out = new Set();
+  const t = String(txt).replace(/```[\s\S]*?```/g, '').replace(/~~~[\s\S]*?~~~/g, '').replace(/`[^`\n]*`/g, '').replace(/%%[\s\S]*?%%/g, '');
+  let m;
+  const re = /\[\[([^\[\]\n]+?)\]\]/g;
+  while ((m = re.exec(t))) { const f = parseLink(m[1]).file; if (f) out.add('w:' + f); }
+  const re2 = /\]\(\s*(<[^>\n]+>|[^)\s]+)(?:\s+"[^"\n]*")?\s*\)/g;
+  while ((m = re2.exec(t))) { const h = m[1].replace(/^<|>$/g, ''); if (h && !isExternal(h) && !h.startsWith('#')) out.add('m:' + h); }
+  return [...out];
+}
+
+async function blLoad() {
+  BL.targets.clear(); BL.pending.clear(); BL.rev = null; BL.vault = IX.vaultId;
+  const d = await idb.get('bl:' + IX.vaultId).catch(() => null);
+  if (d) { for (const [id, t] of d.t || []) BL.targets.set(id, t); for (const id of d.p || []) BL.pending.add(id); }
+}
+let blSaveT = null;
+function blSave(now) {
+  clearTimeout(blSaveT);
+  const doIt = () => idb.set('bl:' + BL.vault, { t: [...BL.targets], p: [...BL.pending] }).catch(() => { });
+  if (now) return doIt();
+  blSaveT = setTimeout(doIt, 1500);
+}
+function blMode() { return LS.get('blMode', 'wifi'); }
+function blAllowed() {
+  if (blMode() === 'off' || !navigator.onLine) return false;
+  if (blMode() === 'wifi') { const c = navigator.connection; if (c && c.type && !['wifi', 'ethernet', 'unknown', 'other'].includes(c.type)) return false; }
+  return true;
+}
+function blSchedule() {
+  if (!IX.ready || BL.vault !== IX.vaultId) return;
+  const live = new Set(IX.notes.map(n => n.id));
+  for (const id of [...BL.targets.keys()]) if (!live.has(id)) BL.targets.delete(id);
+  for (const id of [...BL.pending]) if (!live.has(id)) BL.pending.delete(id);
+  for (const id of live) if (!BL.targets.has(id)) BL.pending.add(id);
+  BL.rev = null; blSave(); blRun();
+}
+function blNoteRead(id, txt) {
+  if (BL.vault !== IX.vaultId) return;
+  BL.targets.set(id, extractLinks(txt)); BL.pending.delete(id); BL.rev = null; blSave();
+}
+async function blRun() {
+  if (BL.running || !BL.pending.size || !blAllowed()) { blProgress(); return; }
+  BL.running = true;
+  const vault = BL.vault;
+  try {
+    const queue = [...BL.pending];
+    let n = 0;
+    const worker = async () => {
+      while (queue.length && blAllowed() && BL.vault === vault) {
+        const id = queue.shift();
+        if (!BL.pending.has(id)) continue;
+        try {
+          const txt = await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true });
+          if (BL.vault !== vault) return;
+          BL.targets.set(id, extractLinks(txt)); BL.pending.delete(id); BL.rev = null;
+          if (++n % 50 === 0) { blSave(); blProgress(); }
+        } catch (e) {
+          if (e instanceof Redirecting) throw e;
+          if (e.status === 404) { BL.pending.delete(id); BL.targets.delete(id); }
+          else await sleep(3000);
+        }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+  } catch (e) { console.warn('backlinks', e); }
+  finally { BL.running = false; blSave(true); blProgress(true); }
+}
+function blReverse() {
+  if (BL.rev) return BL.rev;
+  const rev = new Map();
+  for (const [src, ts] of BL.targets) {
+    if (!IX.items.has(src)) continue;
+    for (const t of ts) {
+      const id = t.startsWith('w:') ? resolve(t.slice(2), src) : resolveRelative(t.slice(2), src);
+      if (!id || id === src) continue;
+      let s = rev.get(id); if (!s) rev.set(id, s = new Set()); s.add(src);
+    }
+  }
+  return BL.rev = rev;
+}
+function blStatusText() {
+  const total = IX.notes.length, left = BL.pending.size;
+  if (!left) return '';
+  const done = Math.max(0, total - left);
+  const why = blMode() === 'off' ? ' A análise está desligada em Configurações.' : !blAllowed() ? ' A análise continua quando o celular estiver no Wi-Fi.' : '';
+  return `Análise das notas em andamento: ${done.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')}. A lista pode estar incompleta.${why}`;
+}
+function blHTML(id) {
+  const ids = [...(blReverse().get(id) || [])].filter(x => IX.items.has(x))
+    .sort((a, b) => IX.items.get(a).n.localeCompare(IX.items.get(b).n, 'pt-BR'));
+  const st = blStatusText();
+  return `<h2 class="sec">Backlinks (${ids.length})</h2>${ids.length ? `<ul class="list">${ids.map(noteLi).join('')}</ul>` : '<p class="muted">Nenhuma nota do vault aponta para esta.</p>'}${st ? `<p class="muted">${esc(st)}</p>` : ''}`;
+}
+let blProgT = 0;
+function blProgress(force) {
+  const box = document.getElementById('backlinks');
+  if (box && currentNote && (force || Date.now() - blProgT > 1500)) { blProgT = Date.now(); box.innerHTML = blHTML(currentNote); }
+  const cfg = document.getElementById('blstatus');
+  if (cfg) cfg.textContent = blStatusText() || 'Todas as notas já foram analisadas.';
+}
+window.addEventListener('online', () => blRun());
+if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', () => blRun());
+
+/* ---------- Itens disponíveis offline ---------- */
+// pins: { id: { att: bool } } para notas ou pastas; have: { id: tamanho } do que está guardado.
+const OFF = { pins: {}, have: {}, stale: new Set(), running: false, vault: null, again: false };
+async function offLoad() {
+  OFF.vault = IX.vaultId; OFF.pins = LS.get('pins:' + IX.vaultId, {});
+  const d = await idb.get('off:' + IX.vaultId).catch(() => null);
+  OFF.have = (d && d.have) || {}; OFF.stale = new Set((d && d.stale) || []);
+}
+function offSave() {
+  if (!OFF.vault) return;
+  LS.set('pins:' + OFF.vault, OFF.pins);
+  idb.set('off:' + OFF.vault, { have: OFF.have, stale: [...OFF.stale] }).catch(() => { });
+}
+const offMode = () => LS.get('offMode', 'wifi');
+function offAllowed() {
+  if (!navigator.onLine) return false;
+  if (offMode() === 'wifi') { const c = navigator.connection; if (c && c.type && !['wifi', 'ethernet', 'unknown', 'other'].includes(c.type)) return false; }
+  return true;
+}
+const folderPrefix = fid => fid === IX.vaultId ? '' : norm(pathOf(fid)) + '/';
+function offFolderPinFor(noteId) {
+  const p = norm(pathOf(noteId));
+  let best = null;
+  for (const [id, pin] of Object.entries(OFF.pins)) {
+    const it = IX.items.get(id); if (!it || !it.f) continue;
+    const pre = folderPrefix(id);
+    if (!pre || p.startsWith(pre)) { if (!best || (pin.att && !best.pin.att)) best = { id, pin }; }
+  }
+  return best;
+}
+function offRequired() {
+  const req = new Map();
+  const add = (id, att) => req.set(id, req.get(id) || att);
+  for (const [id, pin] of Object.entries(OFF.pins)) {
+    const it = IX.items.get(id); if (!it) continue;
+    if (!it.f) { if (isMd(it.n)) add(id, !!pin.att); continue; }
+    const pre = folderPrefix(id);
+    for (const n of IX.notes) if (!pre || norm(n.path).startsWith(pre)) add(n.id, !!pin.att);
+  }
+  return req;
+}
+function offDeps(txt, src) {
+  const embeds = new Set(), atts = new Set();
+  const t = String(txt).replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '').replace(/%%[\s\S]*?%%/g, '');
+  let m;
+  const re = /(!?)\[\[([^\[\]\n]+?)\]\]/g;
+  while ((m = re.exec(t))) {
+    const L = parseLink(m[2]); if (!L.file) continue;
+    const id = resolve(L.file, src); if (!id || id === src) continue;
+    const n = (IX.items.get(id) || {}).n;
+    if (isMd(n)) { if (m[1]) embeds.add(id); } else atts.add(id);
+  }
+  const re2 = /\]\(\s*(<[^>\n]+>|[^)\s]+)(?:\s+"[^"\n]*")?\s*\)/g;
+  while ((m = re2.exec(t))) {
+    const h = m[1].replace(/^<|>$/g, ''); if (!h || isExternal(h) || h.startsWith('#')) continue;
+    const id = resolveRelative(h, src); if (!id) continue;
+    if (!isMd((IX.items.get(id) || {}).n)) atts.add(id);
+  }
+  return { embeds, atts };
+}
+const offOk = id => OFF.have[id] != null && !OFF.stale.has(id);
+async function pool(list, fn, n = 4) {
+  const q = list.slice();
+  await Promise.all(Array.from({ length: n }, async () => { while (q.length && offAllowed()) { const x = q.shift(); try { await fn(x); } catch (e) { if (e instanceof Redirecting) throw e; console.warn('offline', x, e); } } }));
+}
+async function offFetchText(id) {
+  const txt = await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true });
+  await idb.set('note:' + id, txt);
+  OFF.have[id] = txt.length; OFF.stale.delete(id); blNoteRead(id, txt);
+  return txt;
+}
+async function offFetchBlob(id) {
+  const L = await itemLinks(id);
+  const r = await fetch(L.dl); if (!r.ok) throw new Error('HTTP ' + r.status);
+  const b = await r.blob();
+  await idb.set(id, b, 'att');
+  OFF.have[id] = b.size; OFF.stale.delete(id);
+}
+async function offRun() {
+  if (!IX.ready || OFF.vault !== IX.vaultId) return;
+  if (OFF.running) { OFF.again = true; return; }
+  OFF.running = true; OFF.again = false;
+  try {
+    const req = offRequired();
+    const keep = new Set(req.keys());
+    let k = 0; const tick = () => { if (++k % 20 === 0) { offSave(); offProgress(); } };
+    // 1. textos das notas escolhidas
+    await pool([...req.keys()].filter(id => !offOk(id)), async id => { await offFetchText(id); tick(); });
+    // 2. notas incorporadas e anexos
+    const embeds = new Set(), atts = new Set();
+    for (const [id, att] of req) {
+      const txt = await idb.get('note:' + id).catch(() => null); if (txt == null) continue;
+      const d = offDeps(txt, id);
+      d.embeds.forEach(e => embeds.add(e));
+      if (att) d.atts.forEach(a => atts.add(a));
+    }
+    embeds.forEach(e => keep.add(e)); atts.forEach(a => keep.add(a));
+    await pool([...embeds].filter(id => !offOk(id)), async id => { await offFetchText(id); tick(); });
+    await pool([...atts].filter(id => !offOk(id)), async id => { await offFetchBlob(id); tick(); }, 3);
+    // 3. libera o que não é mais necessário
+    for (const id of Object.keys(OFF.have)) {
+      if (keep.has(id)) continue;
+      const it = IX.items.get(id);
+      if (!it || !isMd(it.n)) await idb.del(id, 'att').catch(() => { });
+      delete OFF.have[id]; OFF.stale.delete(id);
+    }
+  } catch (e) { console.warn('offline', e); }
+  finally { OFF.running = false; offSave(); offProgress(); if (OFF.again) offRun(); }
+}
+function offSummary() {
+  const req = offRequired();
+  let pend = 0; for (const id of req.keys()) if (!offOk(id)) pend++;
+  let bytes = 0; for (const v of Object.values(OFF.have)) bytes += v;
+  return { notes: req.size, pend, bytes };
+}
+function offStateText(kind, id) {
+  const req = offRequired();
+  if (kind === 'note') {
+    if (!req.has(id)) return '';
+    if (offOk(id)) return '✓ Guardada no aparelho.' + (OFF.running ? ' Atualizando anexos…' : '');
+  } else {
+    const pre = folderPrefix(id);
+    const ids = IX.notes.filter(n => !pre || norm(n.path).startsWith(pre)).map(n => n.id).filter(x => req.has(x));
+    if (!ids.length) return '';
+    const left = ids.filter(x => !offOk(x)).length;
+    if (!left && !OFF.running) return ids.length === 1 ? '✓ 1 nota guardada no aparelho.' : `✓ ${ids.length} notas guardadas no aparelho.`;
+    if (!left) return `✓ ${ids.length} notas guardadas. Atualizando anexos…`;
+    if (!offAllowed()) return `${ids.length - left} de ${ids.length} notas guardadas. O restante será baixado ${navigator.onLine ? 'no Wi-Fi' : 'quando houver internet'}.`;
+    return `Baixando: ${ids.length - left} de ${ids.length} notas…`;
+  }
+  return offAllowed() ? 'Baixando…' : `Será baixada ${navigator.onLine ? 'no Wi-Fi' : 'quando houver internet'}.`;
+}
+function offBarHTML(kind, id) {
+  const pin = OFF.pins[id];
+  const v = pin ? (pin.att ? 'att' : 'txt') : '';
+  const labels = kind === 'note' ? ['Não guardar no aparelho', 'Guardar no aparelho (só o texto)', 'Guardar no aparelho com anexos'] : ['Não guardar esta pasta no aparelho', 'Guardar as notas desta pasta (só textos)', 'Guardar as notas desta pasta com anexos'];
+  let inh = '';
+  if (kind === 'note') { const f = offFolderPinFor(id); if (f) inh = `Já é guardada pela pasta “${esc(IX.items.get(f.id).n || 'vault')}”${f.pin.att ? ', com anexos' : ''}. `; }
+  return `<div class="offbar"><select data-off="${kind}" data-id="${esc(id)}">${['', 'txt', 'att'].map((o, i) => `<option value="${o}" ${v === o ? 'selected' : ''}>📥 ${labels[i]}</option>`).join('')}</select><div class="muted offinfo">${inh}${esc(offStateText(kind, id))}</div></div>`;
+}
+let offProgT = 0;
+function offProgress() {
+  if (Date.now() - offProgT < 700 && OFF.running) return; offProgT = Date.now();
+  document.querySelectorAll('select[data-off]').forEach(sel => {
+    const info = sel.parentElement.querySelector('.offinfo'); if (!info) return;
+    const html = offBarHTML(sel.dataset.off, sel.dataset.id);
+    const tmp = document.createElement('div'); tmp.innerHTML = html;
+    info.innerHTML = tmp.querySelector('.offinfo').innerHTML;
+  });
+  const cfg = document.getElementById('offstatus');
+  if (cfg) { const s = offSummary(); cfg.textContent = `${s.notes} ${s.notes === 1 ? 'nota escolhida' : 'notas escolhidas'}, ${(s.bytes / MB).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} MB guardados${s.pend ? `, ${s.pend} ainda por baixar` : ''}.`; }
+}
+document.addEventListener('change', ev => {
+  const sel = ev.target.closest && ev.target.closest('select[data-off]');
+  if (!sel) return;
+  const id = sel.dataset.id;
+  if (!sel.value) delete OFF.pins[id]; else OFF.pins[id] = { att: sel.value === 'att' };
+  offSave(); offProgT = 0; offProgress(); offRun();
+});
+window.addEventListener('online', () => offRun());
+if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', () => offRun());
 
 /* ---------- Interface ---------- */
 const view = () => $('#view');
@@ -612,7 +915,7 @@ function viewFolder(fid) {
   const folders = kids.filter(([, v]) => v.f).sort((a, b) => a[1].n.localeCompare(b[1].n, 'pt-BR'));
   const files = kids.filter(([, v]) => !v.f).sort((a, b) => a[1].n.localeCompare(b[1].n, 'pt-BR'));
   const up = fid !== IX.vaultId && it ? `<li><a href="#/pasta/${encodeURIComponent(it.p)}">⬑ Pasta acima</a></li>` : '';
-  view().innerHTML = `<div class="notepath">${esc(fid === IX.vaultId ? '/' : pathOf(fid))}</div><ul class="list">${up}
+  view().innerHTML = `<div class="notepath">${esc(fid === IX.vaultId ? '/' : pathOf(fid))}</div>${offBarHTML('folder', fid)}<ul class="list">${up}
     ${folders.map(([id, v]) => `<li><a href="#/pasta/${encodeURIComponent(id)}">📁 ${esc(v.n)}</a></li>`).join('')}
     ${files.map(([id, v]) => isMd(v.n) ? `<li><a href="${noteHref(id)}">📝 ${esc(v.n.slice(0, -3))}</a></li>` : `<li><a href="#" data-att="${esc(id)}">📎 ${esc(v.n)}</a></li>`).join('')}
   </ul>${!folders.length && !files.length ? '<p class="muted">Pasta vazia.</p>' : ''}`;
@@ -630,10 +933,13 @@ async function viewNote(id, sub) {
   try {
     const raw = await readNote(id);
     if (currentNote !== id) return;
+    blNoteRead(id, raw);
     const { fm, body } = splitFM(raw);
     const html = renderMd(body, id, 0);
-    view().innerHTML = `<div class="notepath">${esc(dirOf(pathOf(id)) || '/')}</div><article class="note">${/^\s*<h1[\s>]/.test(html) ? '' : `<h1 class="ntitle">${esc(title)}</h1>`}${fm ? fmHTML(fm, id) : ''}${html}</article>`;
+    view().innerHTML = `<div class="notepath">${esc(dirOf(pathOf(id)) || '/')}</div>${offBarHTML('note', id)}<article class="note"><h1 class="ntitle">${esc(title)}</h1>${fm ? fmHTML(fm, id) : ''}${html}</article><section id="backlinks">${blHTML(id)}</section>`;
     const art = view().querySelector('.note');
+    // O nome do arquivo só vira título quando a própria nota não tem nenhum título de nível 1.
+    if (art.querySelector('h1:not(.ntitle)')) art.querySelector('.ntitle').remove();
     postProcess(art);
     hydrate(art, 0);
     addRecent(id);
@@ -674,7 +980,8 @@ async function viewPicker(fid) {
       LS.set('vaultId', me.id); LS.set('vaultName', me.name);
       IX.vaultId = me.id; IX.items.clear(); IX.ready = false; IX.deltaLink = null; IX.mode = 'delta';
       location.hash = '#/';
-      if (!(await ixLoad())) ixSync(true).catch(() => { });
+      const had = await ixLoad(); await blLoad(); await offLoad();
+      if (!had) ixSync(true).catch(() => { }); else { route(); blSchedule(); }
     };
   } catch (e) { if (!(e instanceof Redirecting)) showError(e); }
 }
@@ -694,6 +1001,13 @@ function viewConfig() {
     <p><b>Imagens guardadas no celular:</b> <span id="icuso">calculando…</span><br>
     Limite: <select id="iclim">${[0, 100, 300, 1000, 3000].map(v => `<option value="${v}" ${LS.get('imgLimitMB', 300) === v ? 'selected' : ''}>${v ? (v >= 1000 ? v / 1000 + ' GB' : v + ' MB') : 'não guardar'}</option>`).join('')}</select>
     <button class="btn sec" id="iclimpar">Apagar imagens guardadas</button></p>
+    <p><b>Aparência:</b> <select id="theme">${[['auto', 'Automática (segue o celular)'], ['light', 'Tema claro'], ['dark', 'Tema escuro']].map(([v, t]) => `<option value="${v}" ${LS.get('theme', 'auto') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
+    <p><b>Disponível sem internet:</b> escolha as notas ou pastas no topo de cada nota ou pasta, na caixa 📥.<br><span class="muted" id="offstatus"></span><br>
+    <select id="offmode">${[['wifi', 'Baixar só no Wi-Fi'], ['always', 'Baixar também nos dados móveis']].map(([v, t]) => `<option value="${v}" ${offMode() === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    ${Object.keys(OFF.pins).length ? `<ul class="list">${Object.entries(OFF.pins).filter(([id]) => IX.items.has(id)).map(([id, p]) => { const it = IX.items.get(id); const href = it.f ? '#/pasta/' + encodeURIComponent(id) : noteHref(id); return `<li><a href="${href}">${it.f ? '📁' : '📝'} ${esc(id === IX.vaultId ? 'Vault inteiro' : it.n.replace(/\.md$/i, ''))}<span class="p">${p.att ? 'com anexos' : 'só texto'}</span></a></li>`; }).join('')}</ul>` : ''}</p>
+    <p><b>Backlinks:</b> para mostrar quais notas apontam para a nota aberta, o aplicativo lê uma vez todas as notas do vault e guarda só a lista de links de cada uma; depois relê apenas as notas alteradas.<br>
+    <select id="blmode">${[['wifi', 'Analisar só no Wi-Fi'], ['always', 'Analisar também nos dados móveis'], ['off', 'Não analisar']].map(([v, t]) => `<option value="${v}" ${blMode() === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
+    <button class="btn sec" id="blredo">Refazer a análise</button><br><span class="muted" id="blstatus"></span></p>
     <p class="muted">O índice guarda apenas nomes e localização dos arquivos, neste aparelho. As notas são lidas do OneDrive a cada abertura; a última versão lida fica guardada para consulta sem internet, assim como as imagens já exibidas, até o limite escolhido; quando ele é atingido, as imagens vistas há mais tempo são apagadas primeiro.</p>`;
   const s = $('#salvar'); if (s) s.onclick = () => { LS.set('clientId', $('#cid').value.trim()); location.hash = '#/'; route(); };
   const e = $('#entrar'); if (e) e.onclick = () => login().catch(() => { });
@@ -703,6 +1017,11 @@ function viewConfig() {
   showUse();
   $('#iclim').onchange = async ev => { LS.set('imgLimitMB', +ev.target.value); if (+ev.target.value === 0) await IC.clear(); showUse(); };
   $('#iclimpar').onclick = async () => { await IC.clear(); showUse(); };
+  blProgress(); offProgT = 0; offProgress();
+  $('#theme').onchange = ev => { LS.set('theme', ev.target.value); applyTheme(); };
+  $('#offmode').onchange = ev => { LS.set('offMode', ev.target.value); offRun(); offProgT = 0; offProgress(); };
+  $('#blmode').onchange = ev => { LS.set('blMode', ev.target.value); blRun(); blProgress(); };
+  $('#blredo').onclick = () => { BL.targets.clear(); BL.rev = null; blSchedule(); blProgress(); };
   const r = $('#reindex'); if (r) r.onclick = () => { location.hash = '#/'; ixSync(true).catch(() => { }); };
 }
 
@@ -739,6 +1058,11 @@ document.addEventListener('click', ev => {
   if (a) { ev.preventDefault(); openAttachment(a.dataset.att); }
 });
 $('#btnHome').onclick = () => { sessionStorage.removeItem('vl_q'); location.hash = '#/'; if (location.hash === '#/') route(); };
+$('#btnConfig').onclick = () => { location.hash = '#/config'; };
+function applyTheme() {
+  const t = LS.get('theme', 'auto');
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+}
 $('#btnSearch').onclick = () => { location.hash = '#/buscar'; route(); };
 window.addEventListener('hashchange', route);
 
@@ -749,7 +1073,9 @@ window.addEventListener('hashchange', route);
   catch (e) { view().innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
   if (clientId() && loggedIn() && LS.get('vaultId')) {
     const had = await ixLoad();
+    await blLoad(); await offLoad();
     route();
+    if (had) { blSchedule(); offRun(); }
     ixSync(!had).catch(() => { });
   } else route();
 })();

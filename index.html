@@ -9,12 +9,14 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="stylesheet" href="style.css">
+<script>try{var t=JSON.parse(localStorage.getItem('vl_theme')||'"auto"');if(t!=='auto')document.documentElement.dataset.theme=t;}catch(e){}</script>
 </head>
 <body>
 <header id="bar">
   <button id="btnHome" class="ico" title="Início" aria-label="Início">⌂</button>
   <div id="title">Leitor do Vault</div>
   <button id="btnSearch" class="ico" title="Buscar" aria-label="Buscar">⌕</button>
+  <button id="btnConfig" class="ico" title="Configurações" aria-label="Configurações">⚙</button>
 </header>
 <div id="status" hidden></div>
 <main id="view"></main>
