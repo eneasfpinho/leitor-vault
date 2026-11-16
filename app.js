@@ -3,7 +3,7 @@
 
 const AUTH = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 const GRAPH = 'https://graph.microsoft.com/v1.0';
-const SCOPES = 'Files.Read offline_access';
+const scopes = () => (localStorage.getItem('vl_canWrite') === 'true' ? 'Files.ReadWrite' : 'Files.Read') + ' offline_access';
 const REDIRECT = location.origin + location.pathname;
 const IMG = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 const AUD = /\.(mp3|m4a|ogg|oga|wav|flac|webm|3gp)$/i;
@@ -32,10 +32,10 @@ async function login() {
   if (!clientId()) { location.hash = '#/config'; throw new Redirecting(); }
   const verifier = randStr(64), state = randStr(16);
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-  LS.set('pkce', { verifier, state, hash: location.hash });
+  LS.set('pkce', { verifier, state, hash: location.hash, write: LS.get('canWrite', false) });
   const p = new URLSearchParams({
     client_id: clientId(), response_type: 'code', redirect_uri: REDIRECT, response_mode: 'query',
-    scope: SCOPES, code_challenge: b64url(digest), code_challenge_method: 'S256', state
+    scope: scopes(), code_challenge: b64url(digest), code_challenge_method: 'S256', state
   });
   location.assign(AUTH + '/authorize?' + p);
   throw new Redirecting();
@@ -46,13 +46,14 @@ async function handleRedirect() {
   if (!q.has('code') && !q.has('error')) return;
   const pk = LS.get('pkce'); LS.del('pkce');
   history.replaceState(null, '', REDIRECT + ((pk && pk.hash) || ''));
+  if (q.has('error') && pk && pk.write) LS.set('canWrite', false);
   if (q.has('error')) throw new Error('Login recusado: ' + (q.get('error_description') || q.get('error')));
   if (!pk || pk.state !== q.get('state')) throw new Error('O login não pôde ser confirmado. Toque em Entrar novamente.');
   await tokenRequest({ grant_type: 'authorization_code', code: q.get('code'), redirect_uri: REDIRECT, code_verifier: pk.verifier });
 }
 
 async function tokenRequest(params) {
-  const body = new URLSearchParams({ client_id: clientId(), scope: SCOPES, ...params });
+  const body = new URLSearchParams({ client_id: clientId(), scope: scopes(), ...params });
   const r = await fetch(AUTH + '/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(j.error_description || j.error || ('Erro ' + r.status + ' ao obter o token')); e.oauth = true; throw e; }
@@ -850,6 +851,147 @@ document.addEventListener('change', ev => {
 window.addEventListener('online', () => offRun());
 if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', () => offRun());
 
+/* ---------- Edição de notas ---------- */
+const canWrite = () => LS.get('canWrite', false) === true;
+const TASK = /^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/;
+
+async function gw(path, body, headers) {
+  for (let i = 0; i < 2; i++) {
+    let r;
+    try { r = await fetch(GRAPH + path, { method: 'PUT', headers: { Authorization: 'Bearer ' + await token(), ...headers }, body }); }
+    catch (e) { if (e instanceof Redirecting || e.offline) throw e; throw new Error('Sem conexão com o OneDrive. A alteração não foi gravada.'); }
+    if (r.status === 401 && i === 0) { const t = LS.get('tok'); if (t) { t.exp = 0; LS.set('tok', t); } continue; }
+    if (!r.ok) {
+      let m = 'Erro ' + r.status; try { const j = await r.json(); m = (j.error && (j.error.message || j.error.code)) || m; } catch { }
+      if (r.status === 403) m = 'O aplicativo não tem permissão para gravar no OneDrive. Ative a edição de notas em Configurações.';
+      const e = new Error(m); e.status = r.status; throw e;
+    }
+    return r.json();
+  }
+}
+async function readFresh(id) {
+  const meta = await g('/me/drive/items/' + encodeURIComponent(id) + '?$select=id,eTag');
+  const txt = await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true });
+  return { txt, etag: meta.eTag };
+}
+async function writeNote(id, txt, etag) {
+  await gw('/me/drive/items/' + encodeURIComponent(id) + '/content', txt, { 'Content-Type': 'text/plain; charset=utf-8', 'If-Match': etag });
+  await idb.set('note:' + id, txt).catch(() => { });
+  if (OFF.have[id] != null) { OFF.have[id] = txt.length; OFF.stale.delete(id); offSave(); }
+  blNoteRead(id, txt);
+}
+// Lê a versão atual, aplica a alteração e grava; se a nota mudar no meio do caminho, tenta de novo.
+async function modifyNote(id, fn) {
+  for (let i = 0; i < 3; i++) {
+    const { txt, etag } = await readFresh(id);
+    const out = fn(txt);
+    if (out == null || out === txt) return txt;
+    try { await writeNote(id, out, etag); return out; }
+    catch (e) { if (e.status !== 412 || i === 2) throw e; }
+  }
+}
+function taskLines(raw) {
+  const lines = raw.split(/\r?\n/), out = [];
+  let i = 0, fence = false;
+  const fm = splitFM(raw).fm;
+  if (fm != null) i = fm.split(/\r?\n/).length + 2;
+  for (; i < lines.length; i++) {
+    if (/^\s*(?:>\s*)*(```|~~~)/.test(lines[i])) { fence = !fence; continue; }
+    if (!fence && TASK.test(lines[i])) out.push(i);
+  }
+  return out;
+}
+function wireTasks(art, id, raw) {
+  const boxes = [...art.querySelectorAll('input[type=checkbox]')].filter(b => !b.closest('.transclusion'));
+  const idx = taskLines(raw), lines = raw.split(/\r?\n/);
+  if (!canWrite() || boxes.length !== idx.length) return;
+  boxes.forEach((b, k) => {
+    const ln = idx[k], expected = lines[ln];
+    b.disabled = false; b.classList.add('task-edit');
+    b.addEventListener('change', async () => {
+      const want = b.checked;
+      b.disabled = true;
+      try {
+        await modifyNote(id, txt => {
+          const eol = txt.includes('\r\n') ? '\r\n' : '\n';
+          const L = txt.split(/\r?\n/);
+          let at = L[ln] === expected ? ln : -1;
+          if (at < 0) { const hits = L.map((l, j) => l === expected ? j : -1).filter(j => j >= 0); if (hits.length === 1) at = hits[0]; }
+          if (at < 0) throw new Error('A nota foi alterada em outro lugar. Ela será recarregada; tente de novo.');
+          L[at] = L[at].replace(TASK, (m0, a, c, z) => a + (want ? 'x' : ' ') + z);
+          return L.join(eol);
+        });
+        toast(want ? 'Item marcado.' : 'Item desmarcado.');
+        currentNote = null; viewNote(id);
+      } catch (e) {
+        if (e instanceof Redirecting) return;
+        b.checked = !want; b.disabled = false; alert(e.message);
+        if (/alterada/.test(e.message)) { currentNote = null; viewNote(id); }
+      }
+    });
+  });
+}
+function editBarHTML(id) {
+  if (!canWrite()) return '';
+  return `<div class="editbar"><a href="#/editar/${encodeURIComponent(id)}">✎ Editar o texto da nota</a></div>`;
+}
+function appendHTML() {
+  if (!canWrite()) return '';
+  return `<details class="append"><summary>✎ Acrescentar anotação ao fim da nota</summary>
+    <textarea id="apptext" rows="4" placeholder="Texto em Markdown; links [[assim]] funcionam."></textarea>
+    <label class="muted"><input type="checkbox" id="appdate"> Iniciar com a data e a hora</label><br>
+    <button class="btn" id="appsave">Acrescentar</button></details>`;
+}
+function wireAppend(id) {
+  const btn = document.getElementById('appsave'); if (!btn) return;
+  btn.onclick = async () => {
+    let t = document.getElementById('apptext').value.trim();
+    if (!t) return;
+    if (document.getElementById('appdate').checked) {
+      const d = new Date();
+      t = `**${d.toLocaleDateString('pt-BR')} ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}**: ` + t;
+    }
+    btn.disabled = true; btn.textContent = 'Gravando…';
+    try {
+      await modifyNote(id, txt => { const eol = txt.includes('\r\n') ? '\r\n' : '\n'; return txt.replace(/\s+$/, '') + eol + eol + t.replace(/\r?\n/g, eol) + eol; });
+      toast('Anotação gravada no OneDrive.');
+      currentNote = null; viewNote(id);
+    } catch (e) { if (!(e instanceof Redirecting)) { alert(e.message); btn.disabled = false; btn.textContent = 'Acrescentar'; } }
+  };
+}
+async function viewEditor(id) {
+  const it = IX.items.get(id);
+  if (!it) return showError(new Error('Nota não encontrada no índice.'));
+  setTitle('Editando: ' + it.n.replace(/\.md$/i, ''));
+  if (!canWrite()) { view().innerHTML = '<p>A edição de notas está desativada. Ative-a em <a href="#/config">Configurações</a>.</p>'; return; }
+  view().innerHTML = '<p class="muted">Carregando a versão atual da nota…</p>';
+  let cur;
+  try { cur = await readFresh(id); } catch (e) { if (!(e instanceof Redirecting)) showError(e); return; }
+  view().innerHTML = `<textarea id="ed" class="editor" spellcheck="true"></textarea>
+    <p><button class="btn" id="edsave">Salvar no OneDrive</button> <button class="btn sec" id="edcancel">Cancelar</button></p>
+    <p class="muted">Se a nota for alterada em outro lugar enquanto você edita, o aplicativo avisa em vez de sobrescrever.</p>`;
+  const ed = $('#ed'); ed.value = cur.txt;
+  $('#edcancel').onclick = () => { location.hash = noteHref(id); };
+  $('#edsave').onclick = async () => {
+    const b = $('#edsave'); b.disabled = true; b.textContent = 'Salvando…';
+    const eol = cur.txt.includes('\r\n') ? '\r\n' : '\n';
+    try {
+      await writeNote(id, ed.value.replace(/\r?\n/g, eol), cur.etag);
+      toast('Nota salva no OneDrive.'); currentNote = null; location.hash = noteHref(id);
+    } catch (e) {
+      if (e instanceof Redirecting) return;
+      b.disabled = false; b.textContent = 'Salvar no OneDrive';
+      if (e.status === 412) alert('A nota foi alterada em outro lugar depois que você começou a editar. Para não perder nada, copie o seu texto, toque em Cancelar, reabra a edição e aplique de novo as mudanças.');
+      else alert(e.message);
+    }
+  };
+}
+function toast(msg) {
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2500);
+}
+
 /* ---------- Interface ---------- */
 const view = () => $('#view');
 function status(msg) { const s = $('#status'); s.textContent = msg || ''; s.hidden = !msg; }
@@ -936,11 +1078,13 @@ async function viewNote(id, sub) {
     blNoteRead(id, raw);
     const { fm, body } = splitFM(raw);
     const html = renderMd(body, id, 0);
-    view().innerHTML = `<div class="notepath">${esc(dirOf(pathOf(id)) || '/')}</div>${offBarHTML('note', id)}<article class="note"><h1 class="ntitle">${esc(title)}</h1>${fm ? fmHTML(fm, id) : ''}${html}</article><section id="backlinks">${blHTML(id)}</section>`;
+    view().innerHTML = `<div class="notepath">${esc(dirOf(pathOf(id)) || '/')}</div>${offBarHTML('note', id)}${editBarHTML(id)}<article class="note"><h1 class="ntitle">${esc(title)}</h1>${fm ? fmHTML(fm, id) : ''}${html}</article>${appendHTML()}<section id="backlinks">${blHTML(id)}</section>`;
     const art = view().querySelector('.note');
     // O nome do arquivo só vira título quando a própria nota não tem nenhum título de nível 1.
     if (art.querySelector('h1:not(.ntitle)')) art.querySelector('.ntitle').remove();
     postProcess(art);
+    wireTasks(art, id, raw);
+    wireAppend(id);
     hydrate(art, 0);
     addRecent(id);
     scrollToSub(sub);
@@ -1001,6 +1145,10 @@ function viewConfig() {
     <p><b>Imagens guardadas no celular:</b> <span id="icuso">calculando…</span><br>
     Limite: <select id="iclim">${[0, 100, 300, 1000, 3000].map(v => `<option value="${v}" ${LS.get('imgLimitMB', 300) === v ? 'selected' : ''}>${v ? (v >= 1000 ? v / 1000 + ' GB' : v + ' MB') : 'não guardar'}</option>`).join('')}</select>
     <button class="btn sec" id="iclimpar">Apagar imagens guardadas</button></p>
+    <p><b>Edição de notas:</b> ${canWrite() ? 'ativada. É possível marcar caixas de seleção tocando nelas, acrescentar anotações ao fim da nota e editar o texto.' : 'desativada. Ao ativar, a Microsoft pede uma nova autorização, agora para gravar arquivos no OneDrive.'}<br>
+    <button class="btn ${canWrite() ? 'sec' : ''}" id="wtoggle">${canWrite() ? 'Desativar edição' : 'Ativar edição'}</button></p>
+    <p><b>Tamanho dos títulos:</b> <select id="hsize">${[['p', 'Pequenos'], ['m', 'Médios'], ['g', 'Grandes']].map(([v, t]) => `<option value="${v}" ${LS.get('hsize', 'g') === v ? 'selected' : ''}>${t}</option>`).join('')}</select><br>
+    <b>Tamanho do texto:</b> <select id="tsize">${[['p', 'Pequeno'], ['m', 'Médio'], ['g', 'Grande']].map(([v, t]) => `<option value="${v}" ${LS.get('tsize', 'm') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
     <p><b>Aparência:</b> <select id="theme">${[['auto', 'Automática (segue o celular)'], ['light', 'Tema claro'], ['dark', 'Tema escuro']].map(([v, t]) => `<option value="${v}" ${LS.get('theme', 'auto') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
     <p><b>Disponível sem internet:</b> escolha as notas ou pastas no topo de cada nota ou pasta, na caixa 📥.<br><span class="muted" id="offstatus"></span><br>
     <select id="offmode">${[['wifi', 'Baixar só no Wi-Fi'], ['always', 'Baixar também nos dados móveis']].map(([v, t]) => `<option value="${v}" ${offMode() === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -1019,6 +1167,13 @@ function viewConfig() {
   $('#iclimpar').onclick = async () => { await IC.clear(); showUse(); };
   blProgress(); offProgT = 0; offProgress();
   $('#theme').onchange = ev => { LS.set('theme', ev.target.value); applyTheme(); };
+  $('#hsize').onchange = ev => { LS.set('hsize', ev.target.value); applyTheme(); };
+  $('#tsize').onchange = ev => { LS.set('tsize', ev.target.value); applyTheme(); };
+  $('#wtoggle').onclick = () => {
+    if (canWrite()) { LS.set('canWrite', false); viewConfig(); return; }
+    if (!confirm('Para editar notas, o aplicativo precisa de permissão para gravar no seu OneDrive. Você será levado à tela da Microsoft para autorizar. Continuar?')) return;
+    LS.set('canWrite', true); LS.del('tok'); login().catch(() => { });
+  };
   $('#offmode').onchange = ev => { LS.set('offMode', ev.target.value); offRun(); offProgT = 0; offProgress(); };
   $('#blmode').onchange = ev => { LS.set('blMode', ev.target.value); blRun(); blProgress(); };
   $('#blredo').onclick = () => { BL.targets.clear(); BL.rev = null; blSchedule(); blProgress(); };
@@ -1047,6 +1202,7 @@ async function route() {
     if (!LS.get('vaultId')) { location.hash = '#/escolher/'; return; }
     if (!IX.ready) { setTitle(LS.get('vaultName')); view().innerHTML = '<p class="muted">Preparando o índice do vault. Na primeira vez isso pode levar alguns minutos em vaults grandes; nas próximas será quase instantâneo.</p>'; return; }
     if (seg[0] === 'n' && seg[1]) return viewNote(decodeURIComponent(seg[1]), params.get('h'));
+    if (seg[0] === 'editar' && seg[1]) return viewEditor(decodeURIComponent(seg[1]));
     if (seg[0] === 'pasta' && seg[1]) return viewFolder(decodeURIComponent(seg[1]));
     if (seg[0] === 'buscar') return viewHome(true);
     return viewHome(false);
@@ -1060,9 +1216,11 @@ document.addEventListener('click', ev => {
 $('#btnHome').onclick = () => { sessionStorage.removeItem('vl_q'); location.hash = '#/'; if (location.hash === '#/') route(); };
 $('#btnConfig').onclick = () => { location.hash = '#/config'; };
 function applyTheme() {
-  const t = LS.get('theme', 'auto');
-  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  const t = LS.get('theme', 'auto'), d = document.documentElement.dataset;
+  if (t === 'auto') delete d.theme; else d.theme = t;
+  d.hsize = LS.get('hsize', 'g'); d.tsize = LS.get('tsize', 'm');
 }
+applyTheme();
 $('#btnSearch').onclick = () => { location.hash = '#/buscar'; route(); };
 window.addEventListener('hashchange', route);
 

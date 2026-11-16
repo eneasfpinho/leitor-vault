@@ -56,3 +56,14 @@ details.fm pre{white-space:pre-wrap;background:var(--code);padding:8px;border-ra
 .offbar select{font-size:14px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);max-width:100%}
 .offinfo{font-size:12px;margin-top:2px}
 #btnConfig{font-size:18px}
+html[data-tsize=p] body{font-size:15px}html[data-tsize=g] body{font-size:19px}
+html[data-hsize=p] .note h1{font-size:1.35em}html[data-hsize=p] .note h2{font-size:1.2em}html[data-hsize=p] .note h3{font-size:1.08em}html[data-hsize=p] .note h4,html[data-hsize=p] .note h5,html[data-hsize=p] .note h6{font-size:1em}
+html[data-hsize=m] .note h1{font-size:1.65em}html[data-hsize=m] .note h2{font-size:1.35em}html[data-hsize=m] .note h3{font-size:1.15em}html[data-hsize=m] .note h4,html[data-hsize=m] .note h5,html[data-hsize=m] .note h6{font-size:1em}
+html[data-hsize=g] .note h1{font-size:2em}html[data-hsize=g] .note h2{font-size:1.5em}html[data-hsize=g] .note h3{font-size:1.17em}
+.editbar{font-size:13px;margin:0 0 6px}
+.note input.task-edit{width:18px;height:18px;vertical-align:-3px}
+details.append{margin:20px 0 0;font-size:15px}details.append summary{color:var(--accent);cursor:pointer}
+details.append textarea,textarea.editor{width:100%;font:15px/1.5 ui-monospace,monospace;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+textarea.editor{height:calc(100vh - 190px);min-height:300px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#333;color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:9}
+#toast.on{opacity:.95}
