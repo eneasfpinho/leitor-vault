@@ -70,3 +70,16 @@ textarea.editor{height:calc(100vh - 190px);min-height:300px}
 .list-missing{display:block;padding:10px 4px;color:var(--muted)}
 details.bmgroup>summary{padding:10px 4px;cursor:pointer}
 details.bmgroup>ul{margin:0 0 0 14px}
+.btable{overflow-x:auto;margin:6px 0 12px}.btable table{border-collapse:collapse;font-size:14px;min-width:100%}
+.btable th,.btable td{border:1px solid var(--line);padding:4px 8px;vertical-align:top;text-align:left}
+.btable th{background:var(--soft);white-space:nowrap}
+.btable tr.bgrow td{background:var(--soft);font-weight:600}.btable tr.bsum td{font-size:12px;background:var(--code)}
+.bcount{margin:2px 0}.bgroup{font-size:1em;margin:14px 0 4px}
+.bcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.bcard{border:1px solid var(--line);border-radius:8px;padding:8px;font-size:14px;overflow:hidden}
+.bcard-img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:4px;background:var(--code)}
+.bcard-noimg{width:100%;aspect-ratio:4/3;border-radius:4px;background:var(--code)}
+.bcard-t{font-weight:600;margin:4px 0}.bcard-f{font-size:13px}
+.blist{padding-left:20px}.blist li{margin:4px 0}
+select.bview{font-size:14px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin:4px 0}
+.base-box{display:block;margin:8px 0}

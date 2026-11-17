@@ -194,6 +194,7 @@ function pathOf(id) {
 }
 const dirOf = p => { const i = p.lastIndexOf('/'); return i < 0 ? '' : p.slice(0, i); };
 const isMd = n => /\.md$/i.test(n || '');
+const isBase = n => /\.base$/i.test(n || '');
 const hidden = p => /(^|\/)\./.test(p);
 
 function ixRebuild() {
@@ -203,13 +204,13 @@ function ixRebuild() {
     const k = norm(it.n);
     let a = IX.byName.get(k); if (!a) IX.byName.set(k, a = []); a.push(id);
     const p = pathOf(id); IX.byPath.set(norm(p), id);
-    if (isMd(it.n) && !hidden(p)) IX.notes.push({ id, name: it.n.slice(0, -3), key: fold(it.n.slice(0, -3)), path: p });
+    if ((isMd(it.n) || isBase(it.n)) && !hidden(p)) { const nm = it.n.replace(/\.(md|base)$/i, ''); IX.notes.push({ id, name: nm, key: fold(nm), path: p, base: isBase(it.n) }); }
   }
   IX.notes.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
 }
 
 async function ixSave() {
-  await idb.set('ix:' + IX.vaultId, { items: [...IX.items].map(([id, v]) => [id, v.n, v.p, v.f ? 1 : 0]), deltaLink: IX.deltaLink, mode: IX.mode, t: Date.now() });
+  await idb.set('ix:' + IX.vaultId, { items: [...IX.items].map(([id, v]) => [id, v.n, v.p, v.f ? 1 : 0, v.c || 0, v.m || 0, v.s || 0]), deltaLink: IX.deltaLink, mode: IX.mode, v: 2, t: Date.now() });
   IX.t = Date.now();
 }
 
@@ -217,21 +218,25 @@ async function ixLoad() {
   IX.vaultId = LS.get('vaultId'); IX.items.clear(); IX.ready = false;
   const d = await idb.get('ix:' + IX.vaultId).catch(() => null);
   if (!d) return false;
-  for (const [id, n, p, f] of d.items) IX.items.set(id, { n, p, f: !!f });
+  for (const [id, n, p, f, c, m, sz] of d.items) IX.items.set(id, { n, p, f: !!f, c, m, s: sz });
   IX.deltaLink = d.deltaLink; IX.mode = d.mode || 'delta'; IX.t = d.t || 0;
+  if (d.v !== 2) { IX.deltaLink = null; IX.t = 0; } // índice antigo, sem datas: será refeito em segundo plano
   ixRebuild(); IX.ready = true; return true;
 }
 
+const itemRec = (it, parent) => ({ n: it.name, p: parent, f: !!it.folder, c: Date.parse(it.createdDateTime) || 0, m: Date.parse(it.lastModifiedDateTime) || 0, s: it.size || 0 });
 async function ixDelta(progress) {
-  let url = IX.deltaLink || `/me/drive/items/${encodeURIComponent(IX.vaultId)}/delta?$select=id,name,parentReference,folder,file,deleted`;
+  const first = `/me/drive/items/${encodeURIComponent(IX.vaultId)}/delta?$select=id,name,parentReference,folder,file,deleted,size,createdDateTime,lastModifiedDateTime`;
+  let url = IX.deltaLink || first;
   let n = 0, changed = false;
   const incremental = !!IX.deltaLink;
+  const items = incremental ? IX.items : new Map(); // leitura completa: monta um índice novo e troca no fim
   await IC.load();
   while (url) {
     let j;
     try { j = await g(url); }
     catch (e) {
-      if (e.status === 410 && IX.deltaLink) { IX.deltaLink = null; IX.items.clear(); url = `/me/drive/items/${encodeURIComponent(IX.vaultId)}/delta?$select=id,name,parentReference,folder,file,deleted`; continue; }
+      if (e.status === 410 && IX.deltaLink) { IX.deltaLink = null; return ixDelta(progress); }
       throw e;
     }
     for (const it of j.value || []) {
@@ -239,14 +244,15 @@ async function ixDelta(progress) {
       if (it.id === IX.vaultId) continue;
       if (incremental && IC.meta && IC.meta[it.id]) IC.drop(it.id);
       if (incremental && OFF.have[it.id] != null) OFF.stale.add(it.id);
-      if (it.deleted) { if (IX.items.delete(it.id)) changed = true; continue; }
-      IX.items.set(it.id, { n: it.name, p: it.parentReference && it.parentReference.id, f: !!it.folder }); changed = true;
+      if (it.deleted) { if (items.delete(it.id)) changed = true; continue; }
+      items.set(it.id, itemRec(it, it.parentReference && it.parentReference.id)); changed = true;
       if (incremental && !it.folder && isMd(it.name)) BL.pending.add(it.id);
     }
     progress && progress(n);
     if (j['@odata.nextLink']) url = j['@odata.nextLink'];
     else { IX.deltaLink = j['@odata.deltaLink'] || null; url = null; }
   }
+  if (!incremental) { IX.items = items; changed = true; }
   return changed;
 }
 
@@ -257,10 +263,10 @@ async function ixCrawl(progress) {
       if (!queue.length) { if (!active) return; await sleep(80); continue; }
       const fid = queue.shift(); active++;
       try {
-        let url = `/me/drive/items/${encodeURIComponent(fid)}/children?$select=id,name,folder,file&$top=999`;
+        let url = `/me/drive/items/${encodeURIComponent(fid)}/children?$select=id,name,folder,file,size,createdDateTime,lastModifiedDateTime&$top=999`;
         while (url) {
           const j = await g(url);
-          for (const it of j.value || []) { items.set(it.id, { n: it.name, p: fid, f: !!it.folder }); if (it.folder) queue.push(it.id); n++; }
+          for (const it of j.value || []) { items.set(it.id, itemRec(it, fid)); if (it.folder) queue.push(it.id); n++; }
           progress && progress(n);
           url = j['@odata.nextLink'];
         }
@@ -278,7 +284,7 @@ function ixSync(full) {
     const prog = n => status(`Indexando o vault… ${n.toLocaleString('pt-BR')} itens lidos`);
     status(IX.ready ? 'Verificando alterações no vault…' : 'Indexando o vault pela primeira vez…');
     try {
-      if (full) { IX.items.clear(); IX.deltaLink = null; }
+      if (full) IX.deltaLink = null;
       if (IX.mode === 'crawl' && !full && Date.now() - IX.t < 12 * 3600e3) { status(''); return; }
       let changed;
       try { changed = await ixDelta(IX.ready ? null : prog); IX.mode = 'delta'; }
@@ -356,6 +362,7 @@ function wikiHTML(raw) {
   if (!id) return `<a class="wl missing" title="Arquivo não encontrado no vault">${esc(label)}</a>`;
   const n = (IX.items.get(id) || {}).n;
   if (isMd(n)) return `<a class="wl" href="${noteHref(id, L.sub)}">${esc(label)}</a>`;
+  if (isBase(n)) return `<a class="wl" href="#/b/${encodeURIComponent(id)}${L.sub ? '?v=' + encodeURIComponent(L.sub) : ''}">🗃 ${esc(L.alias || label.replace(/\.base$/i, ''))}</a>`;
   return `<a class="wl att" href="#" data-att="${esc(id)}">📎 ${esc(L.alias || n)}</a>`;
 }
 
@@ -376,6 +383,7 @@ function embedHTML(raw) {
   const id = L.file ? resolve(L.file, ctx.id) : ctx.id;
   if (!id) return `<a class="wl missing" title="Arquivo não encontrado no vault">${esc(L.file || raw)}</a>`;
   const name = (IX.items.get(id) || {}).n || '';
+  if (isBase(name)) return `<span class="base-embed" data-base="${esc(id)}" data-view="${esc(L.sub || '')}" data-this="${esc(ctx.id || '')}"><span class="muted">Carregando a base…</span></span>`;
   if (isMd(name)) {
     if (ctx.depth >= 2 || (id === ctx.id && !L.sub)) return wikiHTML(raw);
     return `<span class="transclusion" data-note="${esc(id)}" data-sub="${esc(L.sub || '')}"><a class="wl" href="${noteHref(id, L.sub)}">${esc(name.slice(0, -3))}${L.sub ? ' > ' + esc(prettySub(L.sub)) : ''}</a><span class="tc-body muted"> carregando…</span></span>`;
@@ -402,6 +410,10 @@ marked.use({
       renderer(t) { return `<span class="tag">#${esc(t.tag)}</span>`; } }
   ],
   renderer: {
+    code(tok) {
+      if (String(tok.lang || '').trim().toLowerCase() === 'base') return `<div class="base-embed" data-yaml="${esc(tok.text)}" data-this="${esc(ctx.id || '')}"><span class="muted">Carregando a base…</span></div>`;
+      return false;
+    },
     link(tok) {
       const text = this.parser.parseInline(tok.tokens);
       const href = tok.href || '';
@@ -519,6 +531,15 @@ function postProcess(root) {
 }
 
 async function hydrate(root, depth) {
+  root.querySelectorAll('.base-embed').forEach(async el => {
+    if (el.dataset.done) return; el.dataset.done = '1';
+    try {
+      const yaml = el.dataset.yaml != null ? el.dataset.yaml : await readNote(el.dataset.base);
+      const box = document.createElement('div'); box.className = 'base-box';
+      el.replaceWith(box);
+      renderBaseInto(box, yaml, el.dataset.this || null, el.dataset.view || null, { single: !!el.dataset.view, showName: !!el.dataset.view });
+    } catch (e) { if (!(e instanceof Redirecting)) el.innerHTML = `<span class="err">Não foi possível carregar a base: ${esc(e.message)}</span>`; }
+  });
   root.querySelectorAll('img[data-img]').forEach(async img => {
     try {
       await loadImage(img);
@@ -583,7 +604,7 @@ async function readNote(id) {
 
 /* ---------- Backlinks ---------- */
 // Para cada nota, guarda a lista de destinos dos links que ela contém ("w:" wikilink, "m:" link Markdown).
-const BL = { targets: new Map(), pending: new Set(), rev: null, running: false, vault: null };
+const BL = { targets: new Map(), meta: new Map(), pending: new Set(), rev: null, running: false, vault: null };
 
 function extractLinks(txt) {
   const out = new Set();
@@ -596,15 +617,35 @@ function extractLinks(txt) {
   return [...out];
 }
 
+// Propriedades (frontmatter), tags e incorporações de cada nota, usadas pelas bases.
+function extractMeta(txt) {
+  const { fm, body } = splitFM(String(txt));
+  let p = {};
+  if (fm != null && window.jsyaml) { try { const y = jsyaml.load(fm, { schema: jsyaml.CORE_SCHEMA }); if (y && typeof y === 'object' && !Array.isArray(y)) p = y; } catch { } }
+  const tags = new Set();
+  const addTag = t => { t = String(t || '').trim().replace(/^#/, ''); if (t) tags.add(t); };
+  for (const k of Object.keys(p)) if (/^tags?$/i.test(k)) { const v = p[k]; (Array.isArray(v) ? v : String(v ?? '').split(/[,\s]+/)).forEach(addTag); }
+  const clean = body.replace(/```[\s\S]*?```/g, '').replace(/~~~[\s\S]*?~~~/g, '').replace(/`[^`\n]*`/g, '').replace(/%%[\s\S]*?%%/g, '');
+  let m;
+  const re = /(^|[\s(])#([\p{L}\p{N}_\-\/]*[\p{L}_\-\/][\p{L}\p{N}_\-\/]*)/gu;
+  while ((m = re.exec(clean))) addTag(m[2]);
+  const e = new Set(); const re2 = /!\[\[([^\[\]\n]+?)\]\]/g;
+  while ((m = re2.exec(clean))) { const f = parseLink(m[1]).file; if (f) e.add(f); }
+  return { p, t: [...tags], e: [...e] };
+}
 async function blLoad() {
-  BL.targets.clear(); BL.pending.clear(); BL.rev = null; BL.vault = IX.vaultId;
+  BL.targets.clear(); BL.meta.clear(); BL.pending.clear(); BL.rev = null; BL.vault = IX.vaultId;
   const d = await idb.get('bl:' + IX.vaultId).catch(() => null);
-  if (d) { for (const [id, t] of d.t || []) BL.targets.set(id, t); for (const id of d.p || []) BL.pending.add(id); }
+  if (d && d.v === 2) {
+    for (const [id, t] of d.t || []) BL.targets.set(id, t);
+    for (const [id, m] of d.m || []) BL.meta.set(id, m);
+    for (const id of d.p || []) BL.pending.add(id);
+  } // versão antiga (sem propriedades): todas as notas serão relidas uma vez
 }
 let blSaveT = null;
 function blSave(now) {
   clearTimeout(blSaveT);
-  const doIt = () => idb.set('bl:' + BL.vault, { t: [...BL.targets], p: [...BL.pending] }).catch(() => { });
+  const doIt = () => idb.set('bl:' + BL.vault, { v: 2, t: [...BL.targets], m: [...BL.meta], p: [...BL.pending] }).catch(() => { });
   if (now) return doIt();
   blSaveT = setTimeout(doIt, 1500);
 }
@@ -617,14 +658,14 @@ function blAllowed() {
 function blSchedule() {
   if (!IX.ready || BL.vault !== IX.vaultId) return;
   const live = new Set(IX.notes.map(n => n.id));
-  for (const id of [...BL.targets.keys()]) if (!live.has(id)) BL.targets.delete(id);
+  for (const id of [...BL.targets.keys()]) if (!live.has(id)) { BL.targets.delete(id); BL.meta.delete(id); }
   for (const id of [...BL.pending]) if (!live.has(id)) BL.pending.delete(id);
-  for (const id of live) if (!BL.targets.has(id)) BL.pending.add(id);
+  for (const id of live) if (!BL.targets.has(id) || !BL.meta.has(id)) BL.pending.add(id);
   BL.rev = null; blSave(); blRun();
 }
 function blNoteRead(id, txt) {
   if (BL.vault !== IX.vaultId) return;
-  BL.targets.set(id, extractLinks(txt)); BL.pending.delete(id); BL.rev = null; blSave();
+  BL.targets.set(id, extractLinks(txt)); BL.meta.set(id, extractMeta(txt)); BL.pending.delete(id); BL.rev = null; blSave();
 }
 async function blRun() {
   if (BL.running || !BL.pending.size || !blAllowed()) { blProgress(); return; }
@@ -640,7 +681,7 @@ async function blRun() {
         try {
           const txt = await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true });
           if (BL.vault !== vault) return;
-          BL.targets.set(id, extractLinks(txt)); BL.pending.delete(id); BL.rev = null;
+          BL.targets.set(id, extractLinks(txt)); BL.meta.set(id, extractMeta(txt)); BL.pending.delete(id); BL.rev = null;
           if (++n % 50 === 0) { blSave(); blProgress(); }
         } catch (e) {
           if (e instanceof Redirecting) throw e;
@@ -681,6 +722,7 @@ function blHTML(id) {
 }
 let blProgT = 0;
 function blProgress(force) {
+  if (force && !BL.pending.size && document.querySelector('.base-page') && /^#\/b\//.test(location.hash)) route();
   const box = document.getElementById('backlinks');
   if (box && currentNote && (force || Date.now() - blProgT > 1500)) { blProgT = Date.now(); box.innerHTML = blHTML(currentNote); }
   const cfg = document.getElementById('blstatus');
@@ -724,7 +766,7 @@ function offRequired() {
   const add = (id, att) => req.set(id, req.get(id) || att);
   for (const [id, pin] of Object.entries(OFF.pins)) {
     const it = IX.items.get(id); if (!it) continue;
-    if (!it.f) { if (isMd(it.n)) add(id, !!pin.att); continue; }
+    if (!it.f) { if (isMd(it.n) || isBase(it.n)) add(id, !!pin.att); continue; }
     const pre = folderPrefix(id);
     for (const n of IX.notes) if (!pre || norm(n.path).startsWith(pre)) add(n.id, !!pin.att);
   }
@@ -1061,10 +1103,25 @@ function addRecent(id) {
   r.unshift(id); LS.set('recent:' + IX.vaultId, r.slice(0, 25));
 }
 
+async function viewBase(id, v) {
+  const it = IX.items.get(id);
+  if (!it) return showError(new Error('Esta base não está no índice.'));
+  currentNote = null;
+  setTitle(it.n.replace(/\.base$/i, ''));
+  view().innerHTML = '<p class="muted">Carregando…</p>';
+  try {
+    const yaml = await readNote(id);
+    view().innerHTML = `<div class="notepath">${esc(dirOf(pathOf(id)) || '/')}</div>${offBarHTML('note', id)}<div class="note base-page"></div>`;
+    renderBaseInto(view().querySelector('.base-page'), yaml, id, v, { onView: name => history.replaceState(null, '', '#/b/' + encodeURIComponent(id) + (name ? '?v=' + encodeURIComponent(name) : '')) });
+    addRecent(id);
+  } catch (e) { if (!(e instanceof Redirecting)) showError(e); }
+}
+
 function noteLi(id) {
   const it = IX.items.get(id); if (!it) return '';
   const p = pathOf(id);
-  return `<li><a href="${noteHref(id)}">${esc(it.n.replace(/\.md$/i, ''))}<span class="p">${esc(dirOf(p) || '/')}</span></a></li>`;
+  const href = isBase(it.n) ? '#/b/' + encodeURIComponent(id) : noteHref(id);
+  return `<li><a href="${href}">${isBase(it.n) ? '🗃 ' : ''}${esc(it.n.replace(/\.(md|base)$/i, ''))}<span class="p">${esc(dirOf(p) || '/')}</span></a></li>`;
 }
 
 function search(q) {
@@ -1120,7 +1177,7 @@ function viewFolder(fid) {
   const up = fid !== IX.vaultId && it ? `<li><a href="#/pasta/${encodeURIComponent(it.p)}">⬑ Pasta acima</a></li>` : '';
   view().innerHTML = `<div class="notepath">${esc(fid === IX.vaultId ? '/' : pathOf(fid))}</div>${offBarHTML('folder', fid)}<ul class="list">${up}
     ${folders.map(([id, v]) => `<li><a href="#/pasta/${encodeURIComponent(id)}">📁 ${esc(v.n)}</a></li>`).join('')}
-    ${files.map(([id, v]) => isMd(v.n) ? `<li><a href="${noteHref(id)}">📝 ${esc(v.n.slice(0, -3))}</a></li>` : `<li><a href="#" data-att="${esc(id)}">📎 ${esc(v.n)}</a></li>`).join('')}
+    ${files.map(([id, v]) => isBase(v.n) ? `<li><a href="#/b/${encodeURIComponent(id)}">🗃 ${esc(v.n.slice(0, -5))}</a></li>` : isMd(v.n) ? `<li><a href="${noteHref(id)}">📝 ${esc(v.n.slice(0, -3))}</a></li>` : `<li><a href="#" data-att="${esc(id)}">📎 ${esc(v.n)}</a></li>`).join('')}
   </ul>${!folders.length && !files.length ? '<p class="muted">Pasta vazia.</p>' : ''}`;
 }
 
@@ -1263,6 +1320,7 @@ async function route() {
     if (!LS.get('vaultId')) { location.hash = '#/escolher/'; return; }
     if (!IX.ready) { setTitle(LS.get('vaultName')); view().innerHTML = '<p class="muted">Preparando o índice do vault. Na primeira vez isso pode levar alguns minutos em vaults grandes; nas próximas será quase instantâneo.</p>'; return; }
     if (seg[0] === 'n' && seg[1]) return viewNote(decodeURIComponent(seg[1]), params.get('h'));
+    if (seg[0] === 'b' && seg[1]) return viewBase(decodeURIComponent(seg[1]), params.get('v'));
     if (seg[0] === 'editar' && seg[1]) return viewEditor(decodeURIComponent(seg[1]));
     if (seg[0] === 'pasta' && seg[1]) return viewFolder(decodeURIComponent(seg[1]));
     if (seg[0] === 'buscar') return viewHome(true);
