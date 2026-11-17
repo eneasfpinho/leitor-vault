@@ -992,6 +992,62 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2500);
 }
 
+/* ---------- Favoritos (plugin Favoritos/Bookmarks do Obsidian) ---------- */
+function childByName(parentId, name) {
+  for (const [id, it] of IX.items) if (it.p === parentId && it.n.toLowerCase() === name.toLowerCase()) return id;
+  return null;
+}
+function folderByPath(p) {
+  const k = norm(String(p || '').replace(/^\/+|\/+$/g, ''));
+  if (!k) return IX.vaultId;
+  for (const [id, it] of IX.items) if (it.f && norm(pathOf(id)) === k) return id;
+  return null;
+}
+let bmCache = null;
+async function bmLoad(refresh) {
+  if (!bmCache) bmCache = (await idb.get('bm:' + IX.vaultId).catch(() => null)) || null;
+  if (!refresh) return bmCache;
+  const cfg = childByName(IX.vaultId, '.obsidian');
+  const fid = cfg && (childByName(cfg, 'bookmarks.json') || childByName(cfg, 'starred.json'));
+  if (!fid) { bmCache = { items: [] }; return bmCache; }
+  try {
+    const j = JSON.parse(await g('/me/drive/items/' + encodeURIComponent(fid) + '/content', { text: true }));
+    bmCache = { items: j.items || [] };
+    idb.set('bm:' + IX.vaultId, bmCache).catch(() => { });
+  } catch (e) { if (e instanceof Redirecting) throw e; console.warn('favoritos', e); }
+  return bmCache;
+}
+function bmItemsHTML(items) {
+  return items.map(b => {
+    const title = b.title && String(b.title).trim();
+    if (b.type === 'group') {
+      return `<li><details class="bmgroup"><summary>📂 ${esc(title || 'Grupo')}</summary><ul class="list">${bmItemsHTML(b.items || [])}</ul></details></li>`;
+    }
+    if (b.type === 'file' || b.type === 'heading' || b.type === 'block') {
+      const id = IX.byPath.get(norm(b.path || ''));
+      const sub = b.subpath ? String(b.subpath).replace(/^#/, '') : null;
+      const base = String(b.path || '').split('/').pop();
+      const label = title || base.replace(/\.md$/i, '') + (sub ? ' > ' + prettySub(sub) : '');
+      if (!id) return `<li><span class="list-missing">${esc(label)} <span class="p">não encontrada no índice</span></span></li>`;
+      const it = IX.items.get(id);
+      if (!isMd(it.n)) return `<li><a href="#" data-att="${esc(id)}">📎 ${esc(label)}<span class="p">${esc(dirOf(pathOf(id)) || '/')}</span></a></li>`;
+      return `<li><a href="${noteHref(id, sub)}">⭐ ${esc(label)}<span class="p">${esc(dirOf(pathOf(id)) || '/')}</span></a></li>`;
+    }
+    if (b.type === 'folder') {
+      const id = folderByPath(b.path);
+      const label = title || String(b.path || '').split('/').pop() || 'Vault';
+      return id ? `<li><a href="#/pasta/${encodeURIComponent(id)}">📁 ${esc(label)}</a></li>` : '';
+    }
+    if (b.type === 'url' && /^https?:/i.test(b.url || '')) return `<li><a href="${esc(b.url)}" target="_blank" rel="noopener">🔗 ${esc(title || b.url)}</a></li>`;
+    if (b.type === 'search') return `<li><span class="list-missing">🔎 ${esc(title || b.query || '')} <span class="p">busca salva (só funciona no Obsidian)</span></span></li>`;
+    return '';
+  }).join('');
+}
+function bmHTML(bm) {
+  if (!bm || !bm.items || !bm.items.length) return '';
+  return `<h2 class="sec">Favoritos</h2><ul class="list bm">${bmItemsHTML(bm.items)}</ul>`;
+}
+
 /* ---------- Interface ---------- */
 const view = () => $('#view');
 function status(msg) { const s = $('#status'); s.textContent = msg || ''; s.hidden = !msg; }
@@ -1028,6 +1084,7 @@ function viewHome(focus) {
     <input type="search" id="q" placeholder="Nome da nota…" autocomplete="off" enterkeyhint="search">
     <ul class="list" id="res"></ul>
     <div id="home-extra">
+      <div id="bm"></div>
       ${recent.length ? `<h2 class="sec">Abertas recentemente</h2><ul class="list">${recent.map(noteLi).join('')}</ul>` : ''}
       <h2 class="sec">Vault</h2>
       <ul class="list">
@@ -1037,6 +1094,8 @@ function viewHome(focus) {
       <p class="muted">${IX.notes.length.toLocaleString('pt-BR')} notas no índice${IX.t ? ', atualizado em ' + new Date(IX.t).toLocaleString('pt-BR') : ''}.</p>
     </div>`;
   const q = $('#q'), res = $('#res'), extra = $('#home-extra');
+  const showBm = bm => { const box = document.getElementById('bm'); if (!box) return; const open = [...box.querySelectorAll('details[open] > summary')].map(x => x.textContent); box.innerHTML = bmHTML(bm); box.querySelectorAll('details > summary').forEach(x => { if (open.includes(x.textContent)) x.parentElement.open = true; }); };
+  bmLoad(false).then(showBm).then(() => navigator.onLine ? bmLoad(true).then(showBm) : null).catch(() => { });
   const saved = sessionStorage.getItem('vl_q') || '';
   const run = () => {
     sessionStorage.setItem('vl_q', q.value);
