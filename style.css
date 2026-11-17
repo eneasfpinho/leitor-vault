@@ -83,3 +83,7 @@ details.bmgroup>ul{margin:0 0 0 14px}
 .blist{padding-left:20px}.blist li{margin:4px 0}
 select.bview{font-size:14px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin:4px 0}
 .base-box{display:block;margin:8px 0}
+body:not(.page-tools) #btnTools{display:none}
+body.tools-on #btnTools{background:rgba(255,255,255,.25)}
+body.page-tools:not(.tools-on) .notepath,body.page-tools:not(.tools-on) .offbar,body.page-tools:not(.tools-on) .editbar,body.page-tools:not(.tools-on) details.fm,body.page-tools:not(.tools-on) details.append{display:none}
+#btnTools{font-size:22px;font-weight:700}

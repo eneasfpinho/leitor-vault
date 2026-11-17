@@ -1311,6 +1311,8 @@ async function route() {
   const [path, qs] = h.split('?');
   const params = new URLSearchParams(qs || '');
   const seg = path.split('/').filter(Boolean);
+  document.body.classList.toggle('page-tools', seg[0] === 'n' || seg[0] === 'b');
+  if (!(seg[0] === 'n' && currentNote && seg[1] && decodeURIComponent(seg[1]) === currentNote)) document.body.classList.remove('tools-on');
   if (seg[0] !== 'n') currentNote = null;
   try {
     if (seg[0] === 'config') return viewConfig();
@@ -1333,6 +1335,7 @@ document.addEventListener('click', ev => {
   if (a) { ev.preventDefault(); openAttachment(a.dataset.att); }
 });
 $('#btnHome').onclick = () => { sessionStorage.removeItem('vl_q'); location.hash = '#/'; if (location.hash === '#/') route(); };
+$('#btnTools').onclick = () => { document.body.classList.toggle('tools-on'); if (document.body.classList.contains('tools-on')) window.scrollTo(0, 0); };
 $('#btnConfig').onclick = () => { location.hash = '#/config'; };
 function applyTheme() {
   const t = LS.get('theme', 'auto'), d = document.documentElement.dataset;
