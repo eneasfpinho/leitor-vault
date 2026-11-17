@@ -1021,14 +1021,16 @@ function bmItemsHTML(items) {
   return items.map(b => {
     const title = b.title && String(b.title).trim();
     if (b.type === 'group') {
-      return `<li><details class="bmgroup"><summary>📂 ${esc(title || 'Grupo')}</summary><ul class="list">${bmItemsHTML(b.items || [])}</ul></details></li>`;
+      const inner = bmItemsHTML(b.items || []);
+      if (!inner) return '';
+      return `<li><details class="bmgroup"><summary>📂 ${esc(title || 'Grupo')}</summary><ul class="list">${inner}</ul></details></li>`;
     }
     if (b.type === 'file' || b.type === 'heading' || b.type === 'block') {
       const id = IX.byPath.get(norm(b.path || ''));
       const sub = b.subpath ? String(b.subpath).replace(/^#/, '') : null;
       const base = String(b.path || '').split('/').pop();
       const label = title || base.replace(/\.md$/i, '') + (sub ? ' > ' + prettySub(sub) : '');
-      if (!id) return `<li><span class="list-missing">${esc(label)} <span class="p">não encontrada no índice</span></span></li>`;
+      if (!id) return ''; // favorito de arquivo que já não existe no vault
       const it = IX.items.get(id);
       if (!isMd(it.n)) return `<li><a href="#" data-att="${esc(id)}">📎 ${esc(label)}<span class="p">${esc(dirOf(pathOf(id)) || '/')}</span></a></li>`;
       return `<li><a href="${noteHref(id, sub)}">⭐ ${esc(label)}<span class="p">${esc(dirOf(pathOf(id)) || '/')}</span></a></li>`;
