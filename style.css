@@ -3,7 +3,7 @@
 :root[data-theme=dark]{--bar:#3b2d6e;--bg:#1e1e1e;--fg:#dcddde;--muted:#999;--line:#333;--accent:#a88bfa;--soft:#2a2533;--code:#2b2b2b;--missing:#7d6a99}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-#bar{position:sticky;padding-left:12px!important;top:0;z-index:5;display:flex;align-items:center;gap:4px;padding:3px 4px;padding-top:max(3px,env(safe-area-inset-top));background:var(--bar);color:#fff}
+#bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:4px;padding:3px 4px;padding-top:max(3px,env(safe-area-inset-top));background:var(--bar);color:#fff}
 #title{flex:1;min-width:0;font-weight:600;font-size:14px;line-height:1.25;padding:4px 0;white-space:normal;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
 .ico{flex:none;background:transparent;border:0;color:#fff;font-size:20px;width:34px;height:34px;border-radius:8px;padding:0;line-height:1}
 .ico:active{background:rgba(255,255,255,.2)}
@@ -55,6 +55,7 @@ details.fm pre{white-space:pre-wrap;background:var(--code);padding:8px;border-ra
 .offbar{margin:2px 0 8px}
 .offbar select{font-size:14px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);max-width:100%}
 .offinfo{font-size:12px;margin-top:2px}
+#btnConfig{font-size:18px}
 html[data-tsize=p] body{font-size:15px}html[data-tsize=g] body{font-size:19px}
 html[data-hsize=p] .note h1{font-size:1.35em}html[data-hsize=p] .note h2{font-size:1.2em}html[data-hsize=p] .note h3{font-size:1.08em}html[data-hsize=p] .note h4,html[data-hsize=p] .note h5,html[data-hsize=p] .note h6{font-size:1em}
 html[data-hsize=m] .note h1{font-size:1.65em}html[data-hsize=m] .note h2{font-size:1.35em}html[data-hsize=m] .note h3{font-size:1.15em}html[data-hsize=m] .note h4,html[data-hsize=m] .note h5,html[data-hsize=m] .note h6{font-size:1em}
@@ -83,55 +84,7 @@ details.bmgroup>ul{margin:0 0 0 14px}
 select.bview{font-size:14px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);margin:4px 0}
 .base-box{display:block;margin:8px 0}
 body:not(.page-tools) #btnTools{display:none}
+body.tools-on #btnTools{background:rgba(255,255,255,.25)}
 body.page-tools:not(.tools-on) .notepath,body.page-tools:not(.tools-on) .offbar,body.page-tools:not(.tools-on) .editbar,body.page-tools:not(.tools-on) details.fm,body.page-tools:not(.tools-on) details.append{display:none}
-
-/* Menu da barra superior */
-#btnMenu{font-size:22px}
-#btnMenu.on{background:rgba(255,255,255,.25)}
-#menu{position:absolute;top:100%;right:6px;margin-top:2px;min-width:220px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.25);padding:4px 0;z-index:10}
-#menu[hidden]{display:none}
-#menu button{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:0;color:var(--fg);font-size:16px;padding:10px 14px;text-align:left}
-#menu button:active,#menu button:hover{background:var(--soft)}
-#menu .mi{display:inline-block;width:22px;text-align:center;font-size:18px;color:var(--accent)}
-body.tools-on #btnTools .mi{color:#fff;background:var(--accent);border-radius:6px}
-
-/* Calendário (mesmo formato do plugin Calendário do mês) */
-.calendario-mes-visao{max-width:420px;margin:0 auto}
-.calendario-mes{display:block;line-height:1.2;font-size:16px}
-.calendario-mes table{border-collapse:collapse;width:100%;border:1px solid var(--line);border-radius:6px}
-.calendario-mes caption{padding:.3em 0 .4em;text-align:center}
-.calendario-mes .calendario-mes-titulo{font-weight:600;color:var(--fg)}
-.calendario-mes .calendario-mes-obs{font-size:.85em;font-style:italic;color:var(--muted)}
-.calendario-mes th,.calendario-mes td{border:0;padding:.2em .1em;text-align:center}
-.calendario-mes th{color:var(--muted);font-weight:600}
-.calendario-mes a.calendario-mes-dia{display:block;padding:.45em 0;text-decoration:none;border-radius:6px;cursor:pointer}
-.calendario-mes a.calendario-mes-dia.existe{color:var(--accent);font-weight:600}
-.calendario-mes a.calendario-mes-dia.nao-existe{color:var(--muted);opacity:.6}
-.calendario-mes a.calendario-mes-dia:active{background:var(--soft)}
-.calendario-mes td.calendario-mes-hoje a.calendario-mes-dia{background:var(--accent);color:#fff;font-weight:700;opacity:1}
-.calendario-mes td.calendario-mes-dia-atual a.calendario-mes-dia{box-shadow:inset 0 0 0 1.5px var(--accent)}
-.calendario-mes th.calendario-mes-domingo,.calendario-mes td.calendario-mes-domingo{background:color-mix(in srgb,var(--accent) 22%,transparent)}
-.calendario-mes th.calendario-mes-sabado,.calendario-mes td.calendario-mes-sabado{background:color-mix(in srgb,var(--accent) 9%,transparent)}
-.calendario-mes-visao button,.calendario-mes-visao input{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 10px;font-size:14px;line-height:1;color:var(--muted);border:1px solid var(--line);border-radius:6px;background:var(--bg)}
-.calendario-mes-visao button:active{color:var(--fg);background:var(--soft)}
-.calendario-mes-visao button svg{width:17px;height:17px}
-.calendario-mes-visao input{justify-content:flex-start;width:auto}
-.calendario-mes-visao input:focus{outline:0;color:var(--fg);border-color:var(--accent)}
-.calendario-mes-visao button.calendario-mes-modo{width:34px;padding:0}
-.calendario-mes-visao button.calendario-mes-modo.ativo{color:#fff;background:var(--accent);border-color:var(--accent)}
-.calendario-mes-ir{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-bottom:8px}
-.calendario-mes-ir button{flex:0 0 auto}
-.calendario-mes-ir .calendario-mes-ir-campo{flex:1 1 8em;min-width:8em}
-.calendario-mes-visao a.calendario-mes-link{color:inherit;text-decoration:none;border-radius:4px;padding:2px 4px;cursor:pointer}
-.calendario-mes-visao a.calendario-mes-link:active{color:var(--accent);background:var(--soft)}
-.calendario-mes-visao .calendario-mes-nav{display:flex;align-items:center;justify-content:center;gap:3px}
-.calendario-mes-visao .calendario-mes-nav .calendario-mes-titulo{flex:1 1 auto;text-align:center;white-space:nowrap}
-.calendario-mes-visao button.calendario-mes-seta{flex:0 0 auto;width:32px;padding:0}
-.calendario-mes-quadro{border:1px solid var(--line);border-radius:6px;padding:6px}
-.calendario-mes-quadro-titulo{text-align:center;font-weight:600;color:var(--fg);padding:2px 0 8px}
-.calendario-mes-quadro-grade{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
-.calendario-mes-visao a.calendario-mes-quadro-item{display:flex;align-items:center;justify-content:center;min-height:2.8em;padding:2px;text-align:center;white-space:nowrap;font-size:15px;color:var(--accent);text-decoration:none;border-radius:6px;cursor:pointer}
-.calendario-mes-visao a.calendario-mes-quadro-item:active{background:var(--soft)}
-.calendario-mes-visao a.calendario-mes-quadro-item.vizinho{color:var(--muted);opacity:.7}
-.calendario-mes-visao a.calendario-mes-quadro-item.hoje{box-shadow:inset 0 0 0 1.5px var(--accent)}
-.calendario-mes-visao a.calendario-mes-quadro-item.atual{color:#fff;background:var(--accent);font-weight:700;opacity:1}
+#btnTools{font-size:22px;font-weight:700}
+.alias{color:var(--muted);font-size:.9em}

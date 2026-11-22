@@ -718,7 +718,7 @@ function blHTML(id) {
   const ids = [...(blReverse().get(id) || [])].filter(x => IX.items.has(x))
     .sort((a, b) => IX.items.get(a).n.localeCompare(IX.items.get(b).n, 'pt-BR'));
   const st = blStatusText();
-  return `<h2 class="sec">Backlinks (${ids.length})</h2>${ids.length ? `<ul class="list">${ids.map(noteLi).join('')}</ul>` : '<p class="muted">Nenhuma nota do vault aponta para esta.</p>'}${st ? `<p class="muted">${esc(st)}</p>` : ''}`;
+  return `<h2 class="sec">Backlinks (${ids.length})</h2>${ids.length ? `<ul class="list">${ids.map(id => noteLi(id)).join('')}</ul>` : '<p class="muted">Nenhuma nota do vault aponta para esta.</p>'}${st ? `<p class="muted">${esc(st)}</p>` : ''}`;
 }
 let blProgT = 0;
 function blProgress(force) {
@@ -1117,22 +1117,38 @@ async function viewBase(id, v) {
   } catch (e) { if (!(e instanceof Redirecting)) showError(e); }
 }
 
-function noteLi(id) {
+function noteLi(id, alias) {
   const it = IX.items.get(id); if (!it) return '';
   const p = pathOf(id);
   const href = isBase(it.n) ? '#/b/' + encodeURIComponent(id) : noteHref(id);
-  return `<li><a href="${href}">${isBase(it.n) ? '🗃 ' : ''}${esc(it.n.replace(/\.(md|base)$/i, ''))}<span class="p">${esc(dirOf(p) || '/')}</span></a></li>`;
+  const al = alias ? ` <span class="alias">(${esc(alias)})</span>` : '';
+  return `<li><a href="${href}">${isBase(it.n) ? '🗃 ' : ''}${esc(it.n.replace(/\.(md|base)$/i, ''))}${al}<span class="p">${esc(dirOf(p) || '/')}</span></a></li>`;
 }
 
+function noteAliases(id) {
+  const p = (BL.meta.get(id) || {}).p || {};
+  const out = [];
+  for (const k of Object.keys(p)) if (/^alias(es)?$/i.test(k)) {
+    const v = p[k];
+    (Array.isArray(v) ? v : v == null ? [] : String(v).split(',')).forEach(a => { a = String(a ?? '').trim(); if (a) out.push(a); });
+  }
+  return out;
+}
+const searchAlias = new Map(); // id -> alias que casou na última busca
 function search(q) {
   const words = fold(q).split(/\s+/).filter(Boolean);
   if (!words.length) return [];
-  const out = [];
+  const whole = words.join(' ');
+  const score = key => key === whole ? 0 : key.startsWith(words[0]) ? 1 : 2;
+  const out = []; searchAlias.clear();
   for (const n of IX.notes) {
-    if (!words.every(w => n.key.includes(w))) continue;
-    out.push({ n, s: (n.key === words.join(' ') ? 0 : n.key.startsWith(words[0]) ? 1 : 2) });
+    if (words.every(w => n.key.includes(w))) { out.push({ n, s: score(n.key), len: n.name.length }); continue; }
+    for (const a of noteAliases(n.id)) {
+      const k = fold(a);
+      if (words.every(w => k.includes(w))) { searchAlias.set(n.id, a); out.push({ n, s: score(k) + 0.5, len: a.length }); break; }
+    }
   }
-  out.sort((a, b) => a.s - b.s || a.n.name.length - b.n.name.length);
+  out.sort((a, b) => a.s - b.s || a.len - b.len);
   return out.slice(0, 80).map(x => x.n.id);
 }
 
@@ -1144,7 +1160,7 @@ function viewHome(focus) {
     <ul class="list" id="res"></ul>
     <div id="home-extra">
       <div id="bm"></div>
-      ${recent.length ? `<h2 class="sec">Abertas recentemente</h2><ul class="list">${recent.map(noteLi).join('')}</ul>` : ''}
+      ${recent.length ? `<h2 class="sec">Abertas recentemente</h2><ul class="list">${recent.map(id => noteLi(id)).join('')}</ul>` : ''}
       <h2 class="sec">Vault</h2>
       <ul class="list">
         <li><a href="#/pasta/${encodeURIComponent(IX.vaultId)}">📁 Navegar pelas pastas</a></li>
@@ -1159,7 +1175,7 @@ function viewHome(focus) {
   const run = () => {
     sessionStorage.setItem('vl_q', q.value);
     const ids = search(q.value);
-    res.innerHTML = q.value.trim() ? (ids.length ? ids.map(noteLi).join('') : '<li class="muted" style="padding:10px 4px">Nenhuma nota com esse nome.</li>') : '';
+    res.innerHTML = q.value.trim() ? (ids.length ? ids.map(id => noteLi(id, searchAlias.get(id))).join('') : '<li class="muted" style="padding:10px 4px">Nenhuma nota com esse nome.</li>') : '';
     extra.hidden = !!q.value.trim();
   };
   q.value = saved; run();
@@ -1187,7 +1203,6 @@ async function viewNote(id, sub) {
   if (!it) { showError(new Error('Esta nota não está no índice. Ela pode ter sido renomeada ou apagada.')); return; }
   if (currentNote === id && view().querySelector('.note')) { scrollToSub(sub); return; }
   currentNote = id;
-  CAL.notaAtiva = id;
   const title = it.n.replace(/\.md$/i, '');
   setTitle(title);
   view().innerHTML = `<p class="muted">Carregando…</p>`;
@@ -1315,7 +1330,6 @@ async function route() {
   document.body.classList.toggle('page-tools', seg[0] === 'n' || seg[0] === 'b');
   if (!(seg[0] === 'n' && currentNote && seg[1] && decodeURIComponent(seg[1]) === currentNote)) document.body.classList.remove('tools-on');
   if (seg[0] !== 'n') currentNote = null;
-  if (!menu.hidden) menuAbrir(false);
   try {
     if (seg[0] === 'config') return viewConfig();
     if (!clientId()) return viewConfig();
@@ -1327,7 +1341,6 @@ async function route() {
     if (seg[0] === 'b' && seg[1]) return viewBase(decodeURIComponent(seg[1]), params.get('v'));
     if (seg[0] === 'editar' && seg[1]) return viewEditor(decodeURIComponent(seg[1]));
     if (seg[0] === 'pasta' && seg[1]) return viewFolder(decodeURIComponent(seg[1]));
-    if (seg[0] === 'calendario') return viewCalendar();
     if (seg[0] === 'buscar') return viewHome(true);
     return viewHome(false);
   } catch (e) { if (!(e instanceof Redirecting)) showError(e); }
@@ -1337,26 +1350,16 @@ document.addEventListener('click', ev => {
   const a = ev.target.closest('a[data-att]');
   if (a) { ev.preventDefault(); openAttachment(a.dataset.att); }
 });
-/* Menu da barra superior */
-const menu = $('#menu'), btnMenu = $('#btnMenu');
-function menuAbrir(on) {
-  menu.hidden = !on; btnMenu.setAttribute('aria-expanded', on); btnMenu.classList.toggle('on', on);
-  if (on) { $('#toolsLabel').textContent = document.body.classList.contains('tools-on') ? 'Ocultar detalhes da nota' : 'Mostrar detalhes da nota'; }
-}
-btnMenu.onclick = ev => { ev.stopPropagation(); menuAbrir(menu.hidden); };
-document.addEventListener('click', ev => { if (!menu.hidden && !menu.contains(ev.target)) menuAbrir(false); });
-document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !menu.hidden) menuAbrir(false); });
-$('#btnHome').onclick = () => { menuAbrir(false); sessionStorage.removeItem('vl_q'); location.hash = '#/'; if (location.hash === '#/') route(); };
-$('#btnTools').onclick = () => { menuAbrir(false); document.body.classList.toggle('tools-on'); if (document.body.classList.contains('tools-on')) window.scrollTo(0, 0); };
-$('#btnConfig').onclick = () => { menuAbrir(false); location.hash = '#/config'; };
-$('#btnCal').onclick = () => { menuAbrir(false); location.hash = '#/calendario'; };
+$('#btnHome').onclick = () => { sessionStorage.removeItem('vl_q'); location.hash = '#/'; if (location.hash === '#/') route(); };
+$('#btnTools').onclick = () => { document.body.classList.toggle('tools-on'); if (document.body.classList.contains('tools-on')) window.scrollTo(0, 0); };
+$('#btnConfig').onclick = () => { location.hash = '#/config'; };
 function applyTheme() {
   const t = LS.get('theme', 'auto'), d = document.documentElement.dataset;
   if (t === 'auto') delete d.theme; else d.theme = t;
   d.hsize = LS.get('hsize', 'g'); d.tsize = LS.get('tsize', 'm');
 }
 applyTheme();
-$('#btnSearch').onclick = () => { menuAbrir(false); location.hash = '#/buscar'; route(); };
+$('#btnSearch').onclick = () => { location.hash = '#/buscar'; route(); };
 window.addEventListener('hashchange', route);
 
 (async function start() {

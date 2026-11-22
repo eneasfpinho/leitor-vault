@@ -13,15 +13,11 @@
 </head>
 <body>
 <header id="bar">
+  <button id="btnHome" class="ico" title="Início" aria-label="Início">⌂</button>
   <div id="title">Leitor do Vault</div>
-  <button id="btnMenu" class="ico" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false">☰</button>
-  <nav id="menu" hidden>
-    <button id="btnHome"><span class="mi">⌂</span>Início</button>
-    <button id="btnSearch"><span class="mi">⌕</span>Buscar</button>
-    <button id="btnCal"><span class="mi">📅</span>Calendário</button>
-    <button id="btnTools"><span class="mi">⋮</span><span id="toolsLabel">Mostrar detalhes da nota</span></button>
-    <button id="btnConfig"><span class="mi">⚙</span>Configurações</button>
-  </nav>
+  <button id="btnTools" class="ico" title="Mostrar detalhes da nota" aria-label="Mostrar detalhes da nota">⋮</button>
+  <button id="btnSearch" class="ico" title="Buscar" aria-label="Buscar">⌕</button>
+  <button id="btnConfig" class="ico" title="Configurações" aria-label="Configurações">⚙</button>
 </header>
 <div id="status" hidden></div>
 <main id="view"></main>
@@ -29,7 +25,6 @@
 <script src="marked.min.js"></script>
 <script src="js-yaml.min.js"></script>
 <script src="bases.js"></script>
-<script src="calendario.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
