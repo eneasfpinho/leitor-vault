@@ -1092,6 +1092,92 @@ function bmHTML(bm) {
   return `<h2 class="sec">Favoritos</h2><ul class="list bm">${bmItemsHTML(bm.items)}</ul>`;
 }
 
+/* ---------- Calendário de notas diárias (como o plugin Calendar do Obsidian) ---------- */
+let dnCfg = null;
+async function dnLoad(refresh) {
+  if (!dnCfg) dnCfg = (await idb.get('dn:' + IX.vaultId).catch(() => null)) || null;
+  if (!refresh && dnCfg) return dnCfg;
+  const cfg = { format: '', folder: '' };
+  const dir = childByName(IX.vaultId, '.obsidian');
+  const readJson = async id => { try { return JSON.parse(await g('/me/drive/items/' + encodeURIComponent(id) + '/content', { text: true })); } catch (e) { if (e instanceof Redirecting) throw e; return null; } };
+  if (dir) {
+    const plugins = childByName(dir, 'plugins'), per = plugins && childByName(plugins, 'periodic-notes');
+    const perData = per && childByName(per, 'data.json');
+    const pj = perData ? await readJson(perData) : null;
+    if (pj && pj.daily && pj.daily.enabled !== false && (pj.daily.format || pj.daily.folder)) { cfg.format = pj.daily.format || ''; cfg.folder = pj.daily.folder || ''; }
+    else {
+      const dn = childByName(dir, 'daily-notes.json');
+      const dj = dn ? await readJson(dn) : null;
+      if (dj) { cfg.format = dj.format || ''; cfg.folder = dj.folder || ''; }
+    }
+  }
+  dnCfg = cfg; idb.set('dn:' + IX.vaultId, cfg).catch(() => { });
+  return cfg;
+}
+function dailyNoteFor(d) {
+  const cfg = dnCfg || { format: '', folder: '' };
+  const formats = cfg.format ? [cfg.format] : ['YYYY-MM-DD', 'YYYYMMDD'];
+  const folder = String(cfg.folder || '').replace(/^\/+|\/+$/g, '');
+  for (const f of formats) {
+    const rel = fmtDate(d, f) + '.md';
+    const id = IX.byPath.get(norm(folder ? folder + '/' + rel : rel));
+    if (id) return id;
+    const byName = IX.byName.get(norm(rel.split('/').pop())) || [];
+    if (byName.length === 1) return byName[0];
+    if (byName.length > 1 && folder) { const hit = byName.find(x => norm(pathOf(x)).startsWith(norm(folder) + '/')); if (hit) return hit; }
+  }
+  return null;
+}
+let calMonth = null;
+function calendarHTML() {
+  const now = new Date(); if (!calMonth) calMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const y = calMonth.getFullYear(), m = calMonth.getMonth();
+  const startDow = LS.get('weekStart', 0); // 0 = domingo, 1 = segunda
+  const first = new Date(y, m, 1);
+  const offset = (first.getDay() - startDow + 7) % 7;
+  const start = new Date(y, m, 1 - offset);
+  const names = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+  const head = Array.from({ length: 7 }, (_, i) => `<th>${names[(i + startDow) % 7]}</th>`).join('');
+  let rows = '';
+  for (let w = 0; w < 6; w++) {
+    let tr = '';
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + i);
+      const id = dailyNoteFor(d);
+      const it = id && IX.items.get(id);
+      const dots = it ? Math.max(1, Math.min(5, Math.ceil((it.s || 0) / 1500))) : 0;
+      const cls = [d.getMonth() !== m ? 'out' : '', d.toDateString() === now.toDateString() ? 'today' : '', id ? 'has' : ''].join(' ');
+      tr += `<td class="${cls}"><button class="calday" data-d="${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}" ${id ? `data-id="${esc(id)}"` : ''}>${d.getDate()}<span class="dots">${'•'.repeat(dots)}</span></button></td>`;
+    }
+    rows += `<tr>${tr}</tr>`;
+    if (new Date(start.getFullYear(), start.getMonth(), start.getDate() + (w + 1) * 7).getMonth() !== m && w >= 3) break;
+  }
+  const title = fmtDate(calMonth, 'MMMM [de] YYYY');
+  return `<div class="cal"><div class="calhead"><button class="calnav" data-nav="-1" aria-label="Mês anterior">‹</button><span class="caltitle">${esc(title.charAt(0).toUpperCase() + title.slice(1))}</span><button class="calnav" data-nav="0">Hoje</button><button class="calnav" data-nav="1" aria-label="Próximo mês">›</button></div>
+    <table class="caltab"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function wireCalendar(box) {
+  const draw = () => { box.innerHTML = calendarHTML(); wire(); };
+  const wire = () => {
+    box.querySelectorAll('.calnav').forEach(b => b.onclick = () => {
+      const n = +b.dataset.nav, now = new Date();
+      calMonth = n === 0 ? new Date(now.getFullYear(), now.getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + n, 1);
+      draw();
+    });
+    box.querySelectorAll('.calday').forEach(b => b.onclick = () => {
+      if (b.dataset.id) { location.hash = noteHref(b.dataset.id); return; }
+      const [yy, mm, dd] = b.dataset.d.split('-');
+      toast(`Não há nota diária em ${pad(dd)}/${pad(mm)}/${yy}.`);
+    });
+    let x0 = null;
+    const tab = box.querySelector('.caltab');
+    tab.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+    tab.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + (dx < 0 ? 1 : -1), 1); draw(); } });
+  };
+  draw();
+  dnLoad(false).then(() => { draw(); return navigator.onLine ? dnLoad(true).then(draw) : null; }).catch(() => { });
+}
+
 /* ---------- Interface ---------- */
 const view = () => $('#view');
 function status(msg) { const s = $('#status'); s.textContent = msg || ''; s.hidden = !msg; }
@@ -1156,7 +1242,8 @@ function viewHome(focus) {
   setTitle(LS.get('vaultName') || 'Leitor do Vault');
   const recent = LS.get('recent:' + IX.vaultId, []).filter(id => IX.items.has(id));
   view().innerHTML = `
-    <input type="search" id="q" placeholder="Nome da nota…" autocomplete="off" enterkeyhint="search">
+    <div class="searchrow"><input type="search" id="q" placeholder="Nome da nota…" autocomplete="off" enterkeyhint="search"><button class="btn sec calbtn" id="calbtn" title="Calendário" aria-label="Calendário">📅</button></div>
+    <div id="calbox" ${LS.get('calOpen', false) ? '' : 'hidden'}></div>
     <ul class="list" id="res"></ul>
     <div id="home-extra">
       <div id="bm"></div>
@@ -1170,6 +1257,9 @@ function viewHome(focus) {
     </div>`;
   const q = $('#q'), res = $('#res'), extra = $('#home-extra');
   const showBm = bm => { const box = document.getElementById('bm'); if (!box) return; const open = [...box.querySelectorAll('details[open] > summary')].map(x => x.textContent); box.innerHTML = bmHTML(bm); box.querySelectorAll('details > summary').forEach(x => { if (open.includes(x.textContent)) x.parentElement.open = true; }); };
+  const calbox = $('#calbox');
+  if (!calbox.hidden) wireCalendar(calbox);
+  $('#calbtn').onclick = () => { calbox.hidden = !calbox.hidden; LS.set('calOpen', !calbox.hidden); if (!calbox.hidden) wireCalendar(calbox); };
   bmLoad(false).then(showBm).then(() => navigator.onLine ? bmLoad(true).then(showBm) : null).catch(() => { });
   const saved = sessionStorage.getItem('vl_q') || '';
   const run = () => {
@@ -1283,6 +1373,7 @@ function viewConfig() {
     <button class="btn ${canWrite() ? 'sec' : ''}" id="wtoggle">${canWrite() ? 'Desativar edição' : 'Ativar edição'}</button></p>
     <p><b>Tamanho dos títulos:</b> <select id="hsize">${[['p', 'Pequenos'], ['m', 'Médios'], ['g', 'Grandes']].map(([v, t]) => `<option value="${v}" ${LS.get('hsize', 'g') === v ? 'selected' : ''}>${t}</option>`).join('')}</select><br>
     <b>Tamanho do texto:</b> <select id="tsize">${[['p', 'Pequeno'], ['m', 'Médio'], ['g', 'Grande']].map(([v, t]) => `<option value="${v}" ${LS.get('tsize', 'm') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
+    <p><b>Calendário:</b> a semana começa no <select id="wstart"><option value="0" ${LS.get('weekStart', 0) === 0 ? 'selected' : ''}>domingo</option><option value="1" ${LS.get('weekStart', 0) === 1 ? 'selected' : ''}>segunda-feira</option></select></p>
     <p><b>Aparência:</b> <select id="theme">${[['auto', 'Automática (segue o celular)'], ['light', 'Tema claro'], ['dark', 'Tema escuro']].map(([v, t]) => `<option value="${v}" ${LS.get('theme', 'auto') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
     <p><b>Disponível sem internet:</b> escolha as notas ou pastas no topo de cada nota ou pasta, na caixa 📥.<br><span class="muted" id="offstatus"></span><br>
     <select id="offmode">${[['wifi', 'Baixar só no Wi-Fi'], ['always', 'Baixar também nos dados móveis']].map(([v, t]) => `<option value="${v}" ${offMode() === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -1300,6 +1391,7 @@ function viewConfig() {
   $('#iclim').onchange = async ev => { LS.set('imgLimitMB', +ev.target.value); if (+ev.target.value === 0) await IC.clear(); showUse(); };
   $('#iclimpar').onclick = async () => { await IC.clear(); showUse(); };
   blProgress(); offProgT = 0; offProgress();
+  $('#wstart').onchange = ev => LS.set('weekStart', +ev.target.value);
   $('#theme').onchange = ev => { LS.set('theme', ev.target.value); applyTheme(); };
   $('#hsize').onchange = ev => { LS.set('hsize', ev.target.value); applyTheme(); };
   $('#tsize').onchange = ev => { LS.set('tsize', ev.target.value); applyTheme(); };

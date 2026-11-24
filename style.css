@@ -88,3 +88,17 @@ body.tools-on #btnTools{background:rgba(255,255,255,.25)}
 body.page-tools:not(.tools-on) .notepath,body.page-tools:not(.tools-on) .offbar,body.page-tools:not(.tools-on) .editbar,body.page-tools:not(.tools-on) details.fm,body.page-tools:not(.tools-on) details.append{display:none}
 #btnTools{font-size:22px;font-weight:700}
 .alias{color:var(--muted);font-size:.9em}
+.searchrow{display:flex;gap:6px;align-items:center}.searchrow input{flex:1}
+.calbtn{margin:0;padding:8px 10px;font-size:18px}
+.cal{margin:10px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px}
+.calhead{display:flex;align-items:center;gap:4px;margin-bottom:4px}
+.caltitle{flex:1;font-weight:600;text-align:center}
+.calnav{background:var(--soft);color:var(--accent);border:0;border-radius:6px;padding:4px 10px;font-size:15px}
+.caltab{width:100%;border-collapse:collapse;table-layout:fixed}
+.caltab th{font-size:12px;color:var(--muted);font-weight:500;padding:2px 0}
+.caltab td{padding:1px;text-align:center}
+.calday{width:100%;background:none;border:0;border-radius:6px;padding:4px 0 0;font-size:15px;color:var(--fg);line-height:1.1;min-height:38px}
+.calday .dots{display:block;font-size:10px;letter-spacing:1px;color:var(--accent);min-height:12px}
+.caltab td.out .calday{color:var(--muted);opacity:.55}
+.caltab td.has .calday{font-weight:600}
+.caltab td.today .calday{background:var(--accent);color:#fff}.caltab td.today .calday .dots{color:#fff}
