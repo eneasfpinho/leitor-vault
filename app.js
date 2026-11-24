@@ -411,7 +411,8 @@ marked.use({
   ],
   renderer: {
     code(tok) {
-      if (String(tok.lang || '').trim().toLowerCase() === 'base') return `<div class="base-embed" data-yaml="${esc(tok.text)}" data-this="${esc(ctx.id || '')}"><span class="muted">Carregando a base…</span></div>`;
+      if (String(tok.lang || '').trim().toLowerCase() === 'calendario-mes') return `<div class="cm-embed" data-this="${esc(ctx.id || '')}"></div>`;
+    if (String(tok.lang || '').trim().toLowerCase() === 'base') return `<div class="base-embed" data-yaml="${esc(tok.text)}" data-this="${esc(ctx.id || '')}"><span class="muted">Carregando a base…</span></div>`;
       return false;
     },
     link(tok) {
@@ -531,6 +532,7 @@ function postProcess(root) {
 }
 
 async function hydrate(root, depth) {
+  root.querySelectorAll('.cm-embed').forEach(el => { if (!el.dataset.done) { el.dataset.done = '1'; CalMes.renderBloco(el, el.dataset.this); } });
   root.querySelectorAll('.base-embed').forEach(async el => {
     if (el.dataset.done) return; el.dataset.done = '1';
     try {
@@ -1115,7 +1117,9 @@ async function dnLoad(refresh) {
   return cfg;
 }
 function dailyNoteFor(d) {
-  const cfg = dnCfg || { format: '', folder: '' };
+  // Padrão: as notas de diário AAAAMMDD.md, em qualquer pasta do vault. Opcional: a configuração de notas diárias do Obsidian.
+  const useObs = LS.get('calSource', 'diario') === 'obsidian';
+  const cfg = useObs && dnCfg ? dnCfg : { format: 'YYYYMMDD', folder: '' };
   const formats = cfg.format ? [cfg.format] : ['YYYY-MM-DD', 'YYYYMMDD'];
   const folder = String(cfg.folder || '').replace(/^\/+|\/+$/g, '');
   for (const f of formats) {
@@ -1175,7 +1179,7 @@ function wireCalendar(box) {
     tab.addEventListener('touchend', e => { if (x0 == null) return; const dx = e.changedTouches[0].clientX - x0; x0 = null; if (Math.abs(dx) > 60) { calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + (dx < 0 ? 1 : -1), 1); draw(); } });
   };
   draw();
-  dnLoad(false).then(() => { draw(); return navigator.onLine ? dnLoad(true).then(draw) : null; }).catch(() => { });
+  if (LS.get('calSource', 'diario') === 'obsidian') dnLoad(false).then(() => { draw(); return navigator.onLine ? dnLoad(true).then(draw) : null; }).catch(() => { });
 }
 
 /* ---------- Interface ---------- */
@@ -1258,8 +1262,8 @@ function viewHome(focus) {
   const q = $('#q'), res = $('#res'), extra = $('#home-extra');
   const showBm = bm => { const box = document.getElementById('bm'); if (!box) return; const open = [...box.querySelectorAll('details[open] > summary')].map(x => x.textContent); box.innerHTML = bmHTML(bm); box.querySelectorAll('details > summary').forEach(x => { if (open.includes(x.textContent)) x.parentElement.open = true; }); };
   const calbox = $('#calbox');
-  if (!calbox.hidden) wireCalendar(calbox);
-  $('#calbtn').onclick = () => { calbox.hidden = !calbox.hidden; LS.set('calOpen', !calbox.hidden); if (!calbox.hidden) wireCalendar(calbox); };
+  if (!calbox.hidden) CalMes.renderVisao(calbox, lastNoteName);
+  $('#calbtn').onclick = () => { calbox.hidden = !calbox.hidden; LS.set('calOpen', !calbox.hidden); if (!calbox.hidden) CalMes.renderVisao(calbox, lastNoteName); };
   bmLoad(false).then(showBm).then(() => navigator.onLine ? bmLoad(true).then(showBm) : null).catch(() => { });
   const saved = sessionStorage.getItem('vl_q') || '';
   const run = () => {
@@ -1287,13 +1291,14 @@ function viewFolder(fid) {
   </ul>${!folders.length && !files.length ? '<p class="muted">Pasta vazia.</p>' : ''}`;
 }
 
-let currentNote = null;
+let currentNote = null, lastNoteName = null;
 async function viewNote(id, sub) {
   const it = IX.items.get(id);
   if (!it) { showError(new Error('Esta nota não está no índice. Ela pode ter sido renomeada ou apagada.')); return; }
   if (currentNote === id && view().querySelector('.note')) { scrollToSub(sub); return; }
   currentNote = id;
   const title = it.n.replace(/\.md$/i, '');
+  lastNoteName = title;
   setTitle(title);
   view().innerHTML = `<p class="muted">Carregando…</p>`;
   try {
@@ -1373,7 +1378,6 @@ function viewConfig() {
     <button class="btn ${canWrite() ? 'sec' : ''}" id="wtoggle">${canWrite() ? 'Desativar edição' : 'Ativar edição'}</button></p>
     <p><b>Tamanho dos títulos:</b> <select id="hsize">${[['p', 'Pequenos'], ['m', 'Médios'], ['g', 'Grandes']].map(([v, t]) => `<option value="${v}" ${LS.get('hsize', 'g') === v ? 'selected' : ''}>${t}</option>`).join('')}</select><br>
     <b>Tamanho do texto:</b> <select id="tsize">${[['p', 'Pequeno'], ['m', 'Médio'], ['g', 'Grande']].map(([v, t]) => `<option value="${v}" ${LS.get('tsize', 'm') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
-    <p><b>Calendário:</b> a semana começa no <select id="wstart"><option value="0" ${LS.get('weekStart', 0) === 0 ? 'selected' : ''}>domingo</option><option value="1" ${LS.get('weekStart', 0) === 1 ? 'selected' : ''}>segunda-feira</option></select></p>
     <p><b>Aparência:</b> <select id="theme">${[['auto', 'Automática (segue o celular)'], ['light', 'Tema claro'], ['dark', 'Tema escuro']].map(([v, t]) => `<option value="${v}" ${LS.get('theme', 'auto') === v ? 'selected' : ''}>${t}</option>`).join('')}</select></p>
     <p><b>Disponível sem internet:</b> escolha as notas ou pastas no topo de cada nota ou pasta, na caixa 📥.<br><span class="muted" id="offstatus"></span><br>
     <select id="offmode">${[['wifi', 'Baixar só no Wi-Fi'], ['always', 'Baixar também nos dados móveis']].map(([v, t]) => `<option value="${v}" ${offMode() === v ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -1391,7 +1395,6 @@ function viewConfig() {
   $('#iclim').onchange = async ev => { LS.set('imgLimitMB', +ev.target.value); if (+ev.target.value === 0) await IC.clear(); showUse(); };
   $('#iclimpar').onclick = async () => { await IC.clear(); showUse(); };
   blProgress(); offProgT = 0; offProgress();
-  $('#wstart').onchange = ev => LS.set('weekStart', +ev.target.value);
   $('#theme').onchange = ev => { LS.set('theme', ev.target.value); applyTheme(); };
   $('#hsize').onchange = ev => { LS.set('hsize', ev.target.value); applyTheme(); };
   $('#tsize').onchange = ev => { LS.set('tsize', ev.target.value); applyTheme(); };

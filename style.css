@@ -90,15 +90,40 @@ body.page-tools:not(.tools-on) .notepath,body.page-tools:not(.tools-on) .offbar,
 .alias{color:var(--muted);font-size:.9em}
 .searchrow{display:flex;gap:6px;align-items:center}.searchrow input{flex:1}
 .calbtn{margin:0;padding:8px 10px;font-size:18px}
-.cal{margin:10px 0 4px;border:1px solid var(--line);border-radius:10px;padding:8px}
-.calhead{display:flex;align-items:center;gap:4px;margin-bottom:4px}
-.caltitle{flex:1;font-weight:600;text-align:center}
-.calnav{background:var(--soft);color:var(--accent);border:0;border-radius:6px;padding:4px 10px;font-size:15px}
-.caltab{width:100%;border-collapse:collapse;table-layout:fixed}
-.caltab th{font-size:12px;color:var(--muted);font-weight:500;padding:2px 0}
-.caltab td{padding:1px;text-align:center}
-.calday{width:100%;background:none;border:0;border-radius:6px;padding:4px 0 0;font-size:15px;color:var(--fg);line-height:1.1;min-height:38px}
-.calday .dots{display:block;font-size:10px;letter-spacing:1px;color:var(--accent);min-height:12px}
-.caltab td.out .calday{color:var(--muted);opacity:.55}
-.caltab td.has .calday{font-weight:600}
-.caltab td.today .calday{background:var(--accent);color:#fff}.caltab td.today .calday .dots{color:#fff}
+/* Calendário do mês (reprodução do plugin calendario-mes) */
+.calendario-mes{display:inline-block;margin:.25em 0;font-size:14px;line-height:1.2}
+.calendario-mes table{border-collapse:collapse;margin:0;width:auto;border:1px solid var(--line);border-radius:6px}
+.calendario-mes caption{padding:.3em 0 .25em;text-align:center}
+.calendario-mes .cm-titulo{font-weight:600;color:var(--fg)}
+.calendario-mes .cm-obs{font-size:.85em;font-style:italic;color:var(--muted)}
+.calendario-mes th,.calendario-mes td{border:none;padding:.15em .35em;min-width:1.9em;text-align:center;background:transparent}
+.calendario-mes th{color:var(--muted);font-weight:600}
+.calendario-mes a.cm-dia{display:inline-block;width:100%;text-decoration:none;border-radius:4px;cursor:pointer;padding:2px 0}
+.calendario-mes a.cm-dia.existe{color:var(--accent);font-weight:600}
+.calendario-mes a.cm-dia.nao-existe{color:var(--muted);opacity:.6}
+.calendario-mes td.cm-marcado a.cm-dia{background:var(--accent);color:#fff;font-weight:700;opacity:1}
+.calendario-mes td.cm-hoje a.cm-dia{box-shadow:inset 0 0 0 1px var(--accent)}
+.calendario-mes table th.cm-dom,.calendario-mes table td.cm-dom{background-color:color-mix(in srgb,var(--accent) 22%,transparent)}
+.calendario-mes table th.cm-sab,.calendario-mes table td.cm-sab{background-color:color-mix(in srgb,var(--accent) 9%,transparent)}
+.cm-erro{color:#c0392b;font-size:13px}
+#calbox{margin:10px 0 4px}
+.cm-ir{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-bottom:6px}
+.cm-ir button,.cm-seta{height:30px;padding:0 8px;font-size:14px;color:var(--muted);border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.cm-ir button.cm-modo{width:34px;padding:0}
+.cm-ir button.cm-modo.ativo{background:var(--accent);border-color:var(--accent);color:#fff}
+.cm-ir .cm-campo{flex:1 1 7em;min-width:7em;height:30px;font-size:14px;padding:0 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.calendario-mes.cm-visao{display:block;font-size:15px}
+.cm-visao table{width:100%}
+.cm-visao th,.cm-visao td{min-width:0;padding:.3em .1em}
+.cm-visao a.cm-dia{padding:6px 0}
+.cm-nav{display:flex;align-items:center;justify-content:center;gap:3px}
+.cm-nav .cm-titulo{flex:1 1 auto;text-align:center;white-space:nowrap}
+.cm-seta{width:30px;padding:0}
+a.cm-link{color:inherit;text-decoration:none;border-radius:4px;padding:0 3px;cursor:pointer;border-bottom:1px dotted var(--muted)}
+.cm-quadro{border:1px solid var(--line);border-radius:6px;padding:6px}
+.cm-quadro-titulo{text-align:center;font-weight:600;padding:2px 0 8px}
+.cm-quadro-grade{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+a.cm-item{display:flex;align-items:center;justify-content:center;min-height:2.6em;padding:2px;white-space:nowrap;font-size:14px;color:var(--accent);text-decoration:none;border-radius:6px;cursor:pointer}
+a.cm-item.vizinho{color:var(--muted);opacity:.6}
+a.cm-item.hoje{box-shadow:inset 0 0 0 1px var(--accent)}
+a.cm-item.atual{color:#fff;background:var(--accent);font-weight:700;opacity:1}
