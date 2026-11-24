@@ -1432,6 +1432,14 @@ async function route() {
     if (seg[0] === 'escolher') return viewPicker(seg[1] ? decodeURIComponent(seg[1]) : '');
     if (!LS.get('vaultId')) { location.hash = '#/escolher/'; return; }
     if (!IX.ready) { setTitle(LS.get('vaultName')); view().innerHTML = '<p class="muted">Preparando o índice do vault. Na primeira vez isso pode levar alguns minutos em vaults grandes; nas próximas será quase instantâneo.</p>'; return; }
+    if (seg[0] === 'abrir' && seg[1]) {
+      // abre uma nota pelo caminho no vault (usado pelos links das tarefas no Todoist): #/abrir/Pasta/Nota
+      const alvo = seg.slice(1).map(decodeURIComponent).join('/').replace(/\.md$/i, '');
+      const id = resolve(alvo);
+      if (!id) throw new Error('Nota não encontrada no vault: ' + alvo);
+      history.replaceState(null, '', noteHref(id, params.get('h')));
+      return viewNote(id, params.get('h'));
+    }
     if (seg[0] === 'n' && seg[1]) return viewNote(decodeURIComponent(seg[1]), params.get('h'));
     if (seg[0] === 'b' && seg[1]) return viewBase(decodeURIComponent(seg[1]), params.get('v'));
     if (seg[0] === 'editar' && seg[1]) return viewEditor(decodeURIComponent(seg[1]));
