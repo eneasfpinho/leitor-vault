@@ -183,6 +183,115 @@ async function loadImage(img) {
   }
 }
 
+/* ---------- Árvore genealógica (imagens geradas pelo plugin arvore-genealogica-bk) ---------- */
+// O plugin grava, na pasta oculta abaixo, um SVG para cada bloco ```arvore-genealogica;
+// o nome do arquivo é calculado do caminho da nota e do texto do bloco (sem a linha "altura:").
+const AG_PASTA = '.arvores-leitor';
+const agFonte = src => String(src || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(l => l && !/^altura\s*:/i.test(l)).join('\n');
+function agFnv(str, seed) { let h = seed >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return ('0000000' + h.toString(16)).slice(-8); }
+function agChave(path, src) { const s = String(path || '').normalize('NFC') + '\n' + agFonte(src).normalize('NFC'); return agFnv(s, 2166136261) + agFnv(s, 0x811c9dc5 ^ 0x5bd1e995); }
+
+async function blobDoItem(id) {
+  if (OFF.have[id] != null) { const b = await idb.get(id, 'att').catch(() => null); if (b) return b; }
+  const cached = await IC.get(id);
+  if (cached) return cached;
+  const L = await itemLinks(id);
+  const r = await fetch(L.dl);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const blob = await r.blob();
+  IC.put(id, blob).catch(e => console.warn('cache de imagem', e));
+  return blob;
+}
+
+async function renderArvore(el) {
+  const thisId = el.dataset.this || null, src = el.dataset.src || '';
+  const caminho = thisId ? pathOf(thisId) : '';
+  const fid = IX.byPath.get(norm(AG_PASTA + '/' + agChave(caminho, src) + '.svg'));
+  if (!fid) {
+    el.innerHTML = '<div class="ag-aviso">🌳 A imagem desta árvore genealógica ainda não foi gerada. Abra esta nota no Obsidian do computador (ou use o comando “Atualizar as imagens das árvores para o Leitor do Vault”) e espere o OneDrive sincronizar.</div>';
+    return;
+  }
+  let svg;
+  try {
+    const txt = await (await blobDoItem(fid)).text();
+    const doc = new DOMParser().parseFromString(txt, 'image/svg+xml');
+    svg = doc.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() !== 'svg') throw new Error('arquivo de imagem inválido');
+    svg.querySelectorAll('script,foreignObject,iframe').forEach(n => n.remove());
+    svg.querySelectorAll('*').forEach(n => [...n.attributes].forEach(a => { if (/^on/i.test(a.name) || /^\s*javascript:/i.test(a.value)) n.removeAttribute(a.name); }));
+    svg = document.importNode(svg, true);
+  } catch (e) {
+    if (e instanceof Redirecting) throw e;
+    el.innerHTML = `<span class="err">Não foi possível carregar a árvore genealógica: ${esc(e.message)}</span>`;
+    return;
+  }
+  const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+  const W = vb[2] || +svg.getAttribute('width') || 800, H = vb[3] || +svg.getAttribute('height') || 600, X0 = vb[0] || 0, Y0 = vb[1] || 0;
+  const mAlt = /^\s*altura\s*:\s*(\d+)/im.exec(src);
+  const altura = mAlt ? Math.max(150, +mAlt[1]) : 480;
+
+  const wrap = document.createElement('div'); wrap.className = 'ag-wrap';
+  wrap.innerHTML = `<div class="ag-bar"><button data-a="menos" title="Afastar">−</button><span class="ag-zoom">75%</span><button data-a="mais" title="Aproximar">+</button><button data-a="ajustar" title="Ajustar o desenho ao quadro">Ajustar</button><button data-a="pessoa" title="Centralizar na pessoa da nota">Pessoa</button><button data-a="cheia" title="Tela cheia">⛶</button></div><div class="ag-box"></div>`;
+  const box = wrap.querySelector('.ag-box');
+  box.style.height = `min(${altura}px, 70vh)`;
+  box.appendChild(svg);
+  el.replaceWith(wrap);
+
+  let k = 0.75;
+  const zoomEl = wrap.querySelector('.ag-zoom');
+  const aplicar = (nk, cx, cy) => {
+    // cx, cy: ponto do quadro (em px) que deve ficar parado
+    nk = Math.min(4, Math.max(0.1, nk));
+    if (cx == null) { cx = box.clientWidth / 2; cy = box.clientHeight / 2; }
+    const dx = (box.scrollLeft + cx) / k, dy = (box.scrollTop + cy) / k;
+    k = nk;
+    svg.setAttribute('width', Math.round(W * k)); svg.setAttribute('height', Math.round(H * k));
+    box.scrollLeft = dx * k - cx; box.scrollTop = dy * k - cy;
+    zoomEl.textContent = Math.round(k * 100) + '%';
+  };
+  const centrar = () => {
+    const r = svg.querySelector('.ag-root rect') || svg.querySelector('.ag-node rect');
+    if (!r) { box.scrollLeft = (W * k - box.clientWidth) / 2; box.scrollTop = 0; return; }
+    const cx = (+r.getAttribute('x') + +r.getAttribute('width') / 2 - X0) * k, cy = (+r.getAttribute('y') + +r.getAttribute('height') / 2 - Y0) * k;
+    box.scrollLeft = cx - box.clientWidth / 2; box.scrollTop = cy - box.clientHeight / 2;
+  };
+  const ajustar = () => { aplicar(Math.min(box.clientWidth / W, box.clientHeight / H) * 0.98); box.scrollLeft = (W * k - box.clientWidth) / 2; box.scrollTop = (H * k - box.clientHeight) / 2; };
+  svg.setAttribute('width', Math.round(W * k)); svg.setAttribute('height', Math.round(H * k));
+  requestAnimationFrame(centrar);
+
+  wrap.querySelector('.ag-bar').addEventListener('click', ev => {
+    const a = ev.target.closest('button') && ev.target.closest('button').dataset.a;
+    if (a === 'menos') aplicar(k * 0.8);
+    else if (a === 'mais') aplicar(k * 1.25);
+    else if (a === 'ajustar') ajustar();
+    else if (a === 'pessoa') centrar();
+    else if (a === 'cheia') { wrap.classList.toggle('ag-cheia'); document.body.classList.toggle('ag-sem-rolagem', wrap.classList.contains('ag-cheia')); requestAnimationFrame(centrar); }
+  });
+
+  // Pinça com dois dedos para zoom
+  let pinca = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  box.addEventListener('touchstart', ev => { if (ev.touches.length === 2) { const b = box.getBoundingClientRect(); pinca = { d: dist(ev.touches), k, cx: (ev.touches[0].clientX + ev.touches[1].clientX) / 2 - b.left, cy: (ev.touches[0].clientY + ev.touches[1].clientY) / 2 - b.top }; } }, { passive: true });
+  box.addEventListener('touchmove', ev => { if (pinca && ev.touches.length === 2) { ev.preventDefault(); aplicar(pinca.k * dist(ev.touches) / pinca.d, pinca.cx, pinca.cy); } }, { passive: false });
+  box.addEventListener('touchend', ev => { if (ev.touches.length < 2) pinca = null; });
+  box.addEventListener('wheel', ev => { if (!ev.ctrlKey) return; ev.preventDefault(); const b = box.getBoundingClientRect(); aplicar(k * (ev.deltaY < 0 ? 1.1 : 0.9), ev.clientX - b.left, ev.clientY - b.top); }, { passive: false });
+
+  // Tocar numa pessoa abre a nota dela; tocar numa data ou cidade abre a nota correspondente
+  svg.addEventListener('click', ev => {
+    const lk = ev.target.closest('.ag-link');
+    if (lk && lk.getAttribute('data-link')) {
+      const id = resolve(parseLink(lk.getAttribute('data-link')).file, thisId);
+      if (id) { ev.stopPropagation(); wrap.classList.remove('ag-cheia'); document.body.classList.remove('ag-sem-rolagem'); location.hash = noteHref(id); }
+      return;
+    }
+    const nd = ev.target.closest('.ag-node');
+    const pid = nd && nd.getAttribute('data-id');
+    if (!pid || pid.startsWith('ghost:')) return;
+    const id = IX.byPath.get(norm(pid)) || resolve(pid.replace(/\.md$/i, ''), thisId);
+    if (id) { wrap.classList.remove('ag-cheia'); document.body.classList.remove('ag-sem-rolagem'); location.hash = noteHref(id); }
+  });
+}
+
 /* ---------- Índice do vault ---------- */
 const IX = { vaultId: null, items: new Map(), byName: new Map(), byPath: new Map(), paths: new Map(), notes: [], deltaLink: null, mode: 'delta', ready: false, t: 0 };
 
@@ -412,6 +521,7 @@ marked.use({
   renderer: {
     code(tok) {
       if (String(tok.lang || '').trim().toLowerCase() === 'calendario-mes') return `<div class="cm-embed" data-this="${esc(ctx.id || '')}"></div>`;
+    if (String(tok.lang || '').trim().toLowerCase() === 'arvore-genealogica') return `<div class="ag-embed" data-this="${esc(ctx.id || '')}" data-src="${esc(tok.text)}"><span class="muted">Carregando a árvore genealógica…</span></div>`;
     if (String(tok.lang || '').trim().toLowerCase() === 'base') return `<div class="base-embed" data-yaml="${esc(tok.text)}" data-this="${esc(ctx.id || '')}"><span class="muted">Carregando a base…</span></div>`;
       return false;
     },
@@ -532,6 +642,7 @@ function postProcess(root) {
 }
 
 async function hydrate(root, depth) {
+  root.querySelectorAll('.ag-embed').forEach(el => { if (!el.dataset.done) { el.dataset.done = '1'; renderArvore(el); } });
   root.querySelectorAll('.cm-embed').forEach(el => { if (!el.dataset.done) { el.dataset.done = '1'; CalMes.renderBloco(el, el.dataset.this); } });
   root.querySelectorAll('.base-embed').forEach(async el => {
     if (el.dataset.done) return; el.dataset.done = '1';
